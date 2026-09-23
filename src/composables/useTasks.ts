@@ -1,10 +1,13 @@
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type { Task, TaskInput, ClassificationResult, StatsSummary, Settings, Quadrant } from "../types";
+import type {
+  Task, TaskInput, ClassificationResult, StatsSummary, Settings,
+  Quadrant, WebdavConfig, SyncResult,
+} from "../types";
 
 const tasks = ref<Task[]>([]);
 const loading = ref(false);
-const settings = ref<Settings>({ api_key_configured: false });
+const settings = ref<Settings>({ api_key_configured: false, theme: "light", webdav_configured: false });
 
 async function loadTasks() {
   loading.value = true;
@@ -89,6 +92,40 @@ async function getStats(): Promise<StatsSummary> {
   return await invoke<StatsSummary>("get_stats");
 }
 
+async function setTheme(theme: string) {
+  await invoke("set_theme", { theme });
+  applyTheme(theme);
+}
+
+function applyTheme(theme: string) {
+  document.documentElement.setAttribute("data-theme", theme);
+}
+
+async function exportData(): Promise<string> {
+  return await invoke<string>("export_data");
+}
+
+async function importData(json: string): Promise<number> {
+  const count = await invoke<number>("import_data", { json });
+  await loadTasks();
+  return count;
+}
+
+async function saveWebdav(config: WebdavConfig) {
+  await invoke("save_webdav", { config });
+  await loadSettings();
+}
+
+async function syncToWebdav(): Promise<SyncResult> {
+  return await invoke<SyncResult>("sync_to_webdav");
+}
+
+async function restoreFromWebdav(): Promise<SyncResult> {
+  const result = await invoke<SyncResult>("restore_from_webdav");
+  await loadTasks();
+  return result;
+}
+
 const sortedTasks = computed(() => {
   return [...tasks.value].sort((a, b) => {
     if (a.done !== b.done) return a.done ? 1 : -1;
@@ -115,6 +152,13 @@ export function useTasks() {
     moveTask,
     clearDone,
     getStats,
+    setTheme,
+    applyTheme,
+    exportData,
+    importData,
+    saveWebdav,
+    syncToWebdav,
+    restoreFromWebdav,
     tasksByQuadrant,
   };
 }

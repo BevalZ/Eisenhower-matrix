@@ -33,6 +33,20 @@ export interface ClassificationResult {
 
 export interface Settings {
   api_key_configured: boolean;
+  theme: string;
+  webdav_configured: boolean;
+}
+
+export interface WebdavConfig {
+  url: string;
+  username: string;
+  password: string;
+}
+
+export interface SyncResult {
+  success: boolean;
+  message: string;
+  task_count: number;
 }
 
 export interface StatsSummary {

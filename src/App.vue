@@ -6,7 +6,7 @@ import StatsPanel from "./components/StatsPanel.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import { useTasks } from "./composables/useTasks";
 
-const { loadTasks, loadSettings, clearDone, loading } = useTasks();
+const { loadTasks, loadSettings, clearDone, loading, applyTheme, settings } = useTasks();
 
 const view = ref<"board" | "stats">("board");
 const showWizard = ref(false);
@@ -14,6 +14,7 @@ const showSettings = ref(false);
 
 onMounted(async () => {
   await Promise.all([loadTasks(), loadSettings()]);
+  applyTheme(settings.value.theme || "light");
 });
 </script>
 

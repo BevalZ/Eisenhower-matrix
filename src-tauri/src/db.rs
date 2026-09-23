@@ -82,6 +82,63 @@ impl Db {
         Ok(())
     }
 
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT value FROM settings WHERE key = ?1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query(params![key]).map_err(|e| e.to_string())?;
+        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            Ok(Some(row.get(0).map_err(|e| e.to_string())?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ---- Backup / Restore ----
+
+    pub fn export_all(&self) -> Result<String, String> {
+        let tasks = self.get_tasks()?;
+        let backup = BackupData {
+            version: 1,
+            exported_at: Utc::now().timestamp_millis(),
+            tasks,
+        };
+        serde_json::to_string_pretty(&backup).map_err(|e| e.to_string())
+    }
+
+    pub fn import_all(&self, json: &str) -> Result<usize, String> {
+        let backup: BackupData = serde_json::from_str(json).map_err(|e| format!("JSON 解析失败: {}", e))?;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM tasks", params![]).map_err(|e| e.to_string())?;
+        let count = backup.tasks.len();
+        for t in &backup.tasks {
+            conn.execute(
+                "INSERT INTO tasks (id, title, description, quadrant, priority,
+                 importance_score, urgency_score, done, created_at, completed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    t.id, t.title, t.description, t.quadrant, t.priority,
+                    t.importance_score, t.urgency_score, t.done as i64,
+                    t.created_at, t.completed_at
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(count)
+    }
+
     // ---- Tasks ----
 
     pub fn get_tasks(&self) -> Result<Vec<Task>, String> {

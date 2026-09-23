@@ -37,6 +37,34 @@ pub struct ClassificationResult {
 #[derive(Debug, Serialize)]
 pub struct Settings {
     pub api_key_configured: bool,
+    pub theme: String,
+    pub webdav_configured: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ThemeInput {
+    pub theme: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WebdavConfig {
+    pub url: String,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BackupData {
+    pub version: u32,
+    pub exported_at: i64,
+    pub tasks: Vec<Task>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SyncResult {
+    pub success: bool,
+    pub message: String,
+    pub task_count: usize,
 }
 
 #[derive(Debug, Serialize)]
