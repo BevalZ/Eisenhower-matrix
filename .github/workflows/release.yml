@@ -62,17 +62,6 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
-      - name: Build icons
-        run: |
-          if [ ! -f "src-tauri/icons/icon.png" ]; then
-            echo "No icon found, generating placeholder..."
-            mkdir -p src-tauri/icons
-            node -e "
-              const { createCanvas } = require('canvas');
-            " 2>/dev/null || true
-          fi
-          npx tauri icon src-tauri/icons/app-icon.png 2>/dev/null || echo "No source icon, skipping icon generation"
-
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
