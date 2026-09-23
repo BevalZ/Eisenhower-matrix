@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import TaskCard from "./TaskCard.vue";
 import type { Task, Quadrant } from "../types";
 import { QUADRANT_META } from "../types";
@@ -9,36 +9,71 @@ const { toggleTaskDone, deleteTask, moveTask, tasksByQuadrant } = useTasks();
 
 const dragOverQuadrant = ref<Quadrant | null>(null);
 const draggingTask = ref<Task | null>(null);
+const dragPos = ref({ x: 0, y: 0 });
+let dragStartX = 0, dragStartY = 0;
+let isPotentialDrag = false;
 
-function onDragStart(task: Task) {
-  draggingTask.value = task;
+function onCardPointerDown(e: PointerEvent, task: Task) {
+  if (e.button !== 0) return;
+  isPotentialDrag = true;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  dragPos.value = { x: e.clientX, y: e.clientY };
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
 }
-function onDragEnd() {
+
+function onPointerMove(e: PointerEvent) {
+  if (!isPotentialDrag) return;
+  const dx = e.clientX - dragStartX;
+  const dy = e.clientY - dragStartY;
+  // Threshold: only start drag after moving 5px
+  if (!draggingTask.value && Math.hypot(dx, dy) < 5) return;
+
+  dragPos.value = { x: e.clientX, y: e.clientY };
+
+  // Find which quadrant element is under the pointer
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  const quadrantEl = el?.closest("[data-quadrant]") as HTMLElement | null;
+  if (quadrantEl) {
+    dragOverQuadrant.value = Number(quadrantEl.dataset.quadrant) as Quadrant;
+  } else {
+    dragOverQuadrant.value = null;
+  }
+}
+
+async function onPointerUp(e: PointerEvent) {
+  window.removeEventListener("pointermove", onPointerMove);
+  window.removeEventListener("pointerup", onPointerUp);
+  isPotentialDrag = false;
+
+  if (!draggingTask.value) return;
+  const task = draggingTask.value;
+
+  // Find target quadrant
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  const quadrantEl = el?.closest("[data-quadrant]") as HTMLElement | null;
+  if (quadrantEl) {
+    const q = Number(quadrantEl.dataset.quadrant) as Quadrant;
+    if (q !== task.quadrant) {
+      const list = tasksByQuadrant(q);
+      const maxP = list.length ? Math.max(...list.map((t) => t.priority)) : 0;
+      await moveTask(task.id, q, Math.min(100, maxP + 5));
+    }
+  }
+
   draggingTask.value = null;
   dragOverQuadrant.value = null;
 }
-function onDragOver(e: DragEvent, q: Quadrant) {
-  e.preventDefault();
-  dragOverQuadrant.value = q;
-}
-function onDragLeave(q: Quadrant) {
-  if (dragOverQuadrant.value === q) dragOverQuadrant.value = null;
-}
-async function onDrop(e: DragEvent, q: Quadrant) {
-  e.preventDefault();
-  if (!draggingTask.value) return;
-  const id = draggingTask.value.id;
 
-  const list = tasksByQuadrant(q);
-  const maxP = list.length ? Math.max(...list.map((t) => t.priority)) : 0;
-  const newPriority =
-    draggingTask.value.quadrant === q
-      ? draggingTask.value.priority
-      : Math.min(100, maxP + 5);
-
-  await moveTask(id, q, newPriority);
-  onDragEnd();
+function startDrag(task: Task) {
+  draggingTask.value = task;
 }
+
+onUnmounted(() => {
+  window.removeEventListener("pointermove", onPointerMove);
+  window.removeEventListener("pointerup", onPointerUp);
+});
 
 const quadrants: Quadrant[] = [1, 2, 3, 4];
 const layout: Record<Quadrant, { row: number; col: number }> = {
@@ -58,26 +93,17 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
           v-for="q in quadrants"
           :key="q"
           class="quadrant"
-          :class="{
-            'drag-over': dragOverQuadrant === q,
-          }"
+          :data-quadrant="q"
+          :class="{ 'drag-over': dragOverQuadrant === q }"
           :style="{
             gridRow: layout[q].row + 1,
             gridColumn: layout[q].col + 1,
           }"
-          @dragover="onDragOver($event, q)"
-          @dragleave="onDragLeave(q)"
-          @drop="onDrop($event, q)"
         >
           <div class="q-header">
-            <span
-              class="q-bar"
-              :style="{ background: QUADRANT_META[q].color }"
-            ></span>
+            <span class="q-bar" :style="{ background: QUADRANT_META[q].color }"></span>
             <div class="q-title-wrap">
-              <span class="q-title" :style="{ color: QUADRANT_META[q].color }">
-                {{ QUADRANT_META[q].name }}
-              </span>
+              <span class="q-title" :style="{ color: QUADRANT_META[q].color }">{{ QUADRANT_META[q].name }}</span>
               <span class="q-sub">{{ QUADRANT_META[q].subtitle }}</span>
             </div>
             <span class="q-count">{{ tasksByQuadrant(q).length }}</span>
@@ -89,8 +115,8 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
               :task="task"
               @toggle="toggleTaskDone"
               @remove="deleteTask"
-              @dragstart="onDragStart"
-              @dragend="onDragEnd"
+              @drag-start="startDrag"
+              @pointer-down="onCardPointerDown"
             />
             <div v-if="!tasksByQuadrant(q).length" class="empty">
               <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.2">
@@ -104,6 +130,15 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
       </div>
       <span class="axis-label axis-x">← 不紧急 &nbsp;&nbsp;|&nbsp;&nbsp; 紧急 →</span>
     </div>
+
+    <!-- Drag ghost -->
+    <div
+      v-if="draggingTask"
+      class="drag-ghost"
+      :style="{ left: dragPos.x + 'px', top: dragPos.y + 'px' }"
+    >
+      {{ draggingTask.title }}
+    </div>
   </div>
 </template>
 
@@ -114,6 +149,7 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   flex-direction: column;
   padding: 16px;
   overflow: hidden;
+  position: relative;
 }
 .axis-axis {
   flex: 1;
@@ -136,9 +172,7 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   transform-origin: left center;
   white-space: nowrap;
 }
-.axis-x {
-  margin-top: 8px;
-}
+.axis-x { margin-top: 8px; }
 .grid {
   flex: 1;
   display: grid;
@@ -155,14 +189,12 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   flex-direction: column;
   overflow: hidden;
   transition: border-color var(--dur-fast) var(--ease),
-    box-shadow var(--dur-fast) var(--ease),
-    transform var(--dur-fast) var(--ease);
+    box-shadow var(--dur-fast) var(--ease);
   box-shadow: var(--shadow-xs);
 }
 .quadrant.drag-over {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px var(--primary-light);
-  transform: scale(1.01);
 }
 .q-header {
   display: flex;
@@ -172,26 +204,10 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   border-bottom: 1px solid var(--border-light);
   background: var(--surface-2);
 }
-.q-bar {
-  width: 4px;
-  height: 20px;
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-.q-title-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.q-title {
-  font-weight: 600;
-  font-size: 13px;
-  line-height: 1.2;
-}
-.q-sub {
-  font-size: 11px;
-  color: var(--text-muted);
-}
+.q-bar { width: 4px; height: 20px; border-radius: 2px; flex-shrink: 0; }
+.q-title-wrap { display: flex; flex-direction: column; gap: 1px; }
+.q-title { font-weight: 600; font-size: 13px; line-height: 1.2; }
+.q-sub { font-size: 11px; color: var(--text-muted); }
 .q-count {
   margin-left: auto;
   font-size: 11px;
@@ -203,11 +219,7 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
-.q-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 10px;
-}
+.q-body { flex: 1; overflow-y: auto; padding: 10px; }
 .empty {
   display: flex;
   flex-direction: column;
@@ -217,5 +229,22 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   font-size: 12px;
   padding: 40px 0;
   opacity: 0.6;
+}
+.drag-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  background: var(--primary);
+  color: white;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+  transform: translate(-50%, -50%);
+  max-width: 250px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

@@ -216,6 +216,14 @@ pub fn run() {
             minimize_to_ball,
             restore_from_ball,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                if window.label() == "main" {
+                    // Quit entirely when main window closes
+                    std::process::exit(0);
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

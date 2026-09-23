@@ -6,17 +6,17 @@ const props = defineProps<{ task: Task }>();
 const emit = defineEmits<{
   toggle: [id: number];
   remove: [id: number];
-  dragstart: [task: Task];
-  dragend: [];
+  "drag-start": [task: Task];
+  "pointer-down": [e: PointerEvent, task: Task];
 }>();
 
-function onDragStart(e: DragEvent) {
-  e.dataTransfer?.setData("text/plain", String(props.task.id));
-  e.dataTransfer!.effectAllowed = "move";
-  emit("dragstart", props.task);
-}
-
 const meta = QUADRANT_META[props.task.quadrant];
+
+function onPointerDown(e: PointerEvent) {
+  if ((e.target as HTMLElement).closest("button")) return;
+  emit("pointer-down", e, props.task);
+  emit("drag-start", props.task);
+}
 </script>
 
 <template>
@@ -24,9 +24,7 @@ const meta = QUADRANT_META[props.task.quadrant];
     class="task-card anim-popIn"
     :class="{ done: task.done }"
     :style="{ '--q-color': meta.color, '--q-light': meta.bg }"
-    draggable="true"
-    @dragstart="onDragStart"
-    @dragend="emit('dragend')"
+    @pointerdown="onPointerDown"
   >
     <div class="accent"></div>
     <div class="card-body">
@@ -70,43 +68,27 @@ const meta = QUADRANT_META[props.task.quadrant];
     opacity var(--dur) var(--ease),
     transform var(--dur-fast) var(--ease);
   overflow: hidden;
+  touch-action: none;
 }
 .task-card:hover {
   box-shadow: var(--shadow-md);
   transform: translateY(-1px);
 }
-.task-card:active {
-  cursor: grabbing;
-  transform: scale(0.98);
-}
-.task-card.done {
-  opacity: 0.5;
-}
+.task-card:active { cursor: grabbing; }
+.task-card.done { opacity: 0.5; }
 .task-card.done .title {
   text-decoration: line-through;
   color: var(--text-muted);
 }
-
-/* Left accent bar */
 .accent {
   position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
+  left: 0; top: 0; bottom: 0;
   width: 3px;
   background: var(--q-color);
   opacity: 0.7;
 }
-
-.card-body {
-  padding: 10px 12px 10px 14px;
-}
-
-.card-top {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
+.card-body { padding: 10px 12px 10px 14px; }
+.card-top { display: flex; align-items: center; gap: 8px; }
 .title {
   flex: 1;
   font-weight: 500;
@@ -114,91 +96,39 @@ const meta = QUADRANT_META[props.task.quadrant];
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition: color var(--dur) var(--ease);
 }
-
-/* Checkbox */
 .check {
-  width: 18px;
-  height: 18px;
+  width: 18px; height: 18px;
   border-radius: 50%;
   border: 1.5px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
   transition: all var(--dur-fast) var(--ease-spring);
   background: var(--surface);
 }
-.check:hover {
-  border-color: var(--success);
-}
-.check.checked {
-  background: var(--success);
-  border-color: var(--success);
-  transform: scale(1.05);
-}
-
-/* Delete */
+.check:hover { border-color: var(--success); }
+.check.checked { background: var(--success); border-color: var(--success); transform: scale(1.05); }
 .del {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   opacity: 0;
-  transition: opacity var(--dur-fast) var(--ease),
-    background var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.task-card:hover .del {
-  opacity: 1;
-}
-.del:hover {
-  background: var(--danger-light);
-  color: var(--danger);
-}
-
+.task-card:hover .del { opacity: 1; }
+.del:hover { background: var(--danger-light); color: var(--danger); }
 .desc {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin: 6px 0 0 26px;
-  line-height: 1.5;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  font-size: 12px; color: var(--text-secondary);
+  margin: 6px 0 0 26px; line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-
-.meta-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 8px;
-  margin-left: 26px;
-}
+.meta-row { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; margin-left: 26px; }
 .tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-weight: 500;
-  color: var(--q-color);
-  background: var(--q-light);
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  font-weight: 500; color: var(--q-color); background: var(--q-light);
 }
-.tag .dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--q-color);
-}
-.score {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
+.tag .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--q-color); }
+.score { font-size: 11px; color: var(--text-muted); }
 </style>
