@@ -91,7 +91,35 @@ async fn classify_task(
     let api_key = state.db.get_api_key()?.ok_or(
         "尚未配置 API Key，请先在设置中填入 TypeSafe AI API Key",
     )?;
-    jevai::classify(&api_key, &description).await
+    let (imp_bias, urg_bias) = state.db.get_calibration_bias()?;
+    jevai::classify(&api_key, &description, imp_bias, urg_bias).await
+}
+
+#[tauri::command]
+fn record_feedback(
+    task_title: String,
+    ai_importance: f64,
+    ai_urgency: f64,
+    ai_quadrant: i64,
+    user_importance: f64,
+    user_urgency: f64,
+    user_quadrant: i64,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    state.db.record_feedback(
+        &task_title,
+        ai_importance,
+        ai_urgency,
+        ai_quadrant,
+        user_importance,
+        user_urgency,
+        user_quadrant,
+    )
+}
+
+#[tauri::command]
+fn get_learning_stats(state: tauri::State<AppState>) -> Result<LearningStats, String> {
+    state.db.get_learning_stats()
 }
 
 // ---- Import / Export ----
@@ -155,6 +183,8 @@ pub fn run() {
             set_theme,
             save_webdav,
             classify_task,
+            record_feedback,
+            get_learning_stats,
             export_data,
             import_data,
             sync_to_webdav,

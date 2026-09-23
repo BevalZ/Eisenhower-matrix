@@ -51,6 +51,22 @@ impl Db {
         )
         .map_err(|e| e.to_string())?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_title TEXT NOT NULL DEFAULT '',
+                ai_importance REAL NOT NULL,
+                ai_urgency REAL NOT NULL,
+                ai_quadrant INTEGER NOT NULL,
+                user_importance REAL NOT NULL,
+                user_urgency REAL NOT NULL,
+                user_quadrant INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+
         Ok(())
     }
 
@@ -313,6 +329,115 @@ impl Db {
             completion_rate: rate,
             by_quadrant,
             recent_completed: recent,
+        })
+    }
+
+    // ---- AI Learning / Feedback ----
+
+    pub fn record_feedback(
+        &self,
+        task_title: &str,
+        ai_importance: f64,
+        ai_urgency: f64,
+        ai_quadrant: i64,
+        user_importance: f64,
+        user_urgency: f64,
+        user_quadrant: i64,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO feedback
+                (task_title, ai_importance, ai_urgency, ai_quadrant,
+                 user_importance, user_urgency, user_quadrant, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                task_title, ai_importance, ai_urgency, ai_quadrant,
+                user_importance, user_urgency, user_quadrant,
+                Utc::now().timestamp_millis()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Get calibration bias from accumulated feedback.
+    /// Returns (importance_bias, urgency_bias) — how much to shift future AI scores.
+    pub fn get_calibration_bias(&self) -> Result<(f64, f64), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM feedback", params![], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if count == 0 {
+            return Ok((0.0, 0.0));
+        }
+        let avg: (f64, f64) = conn
+            .query_row(
+                "SELECT AVG(user_importance - ai_importance),
+                        AVG(user_urgency - ai_urgency)
+                 FROM feedback",
+                params![],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        // Soften bias: with few samples, trust AI more; with many, trust user more.
+        let weight = (count as f64 / (count as f64 + 5.0)).min(0.6);
+        Ok((avg.0 * weight, avg.1 * weight))
+    }
+
+    pub fn get_learning_stats(&self) -> Result<LearningStats, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM feedback", params![], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+
+        let (imp_bias, urg_bias) = self.get_calibration_bias()?;
+
+        let correct: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM feedback WHERE ai_quadrant = user_quadrant",
+                params![],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let accuracy = if total > 0 {
+            correct as f64 / total as f64
+        } else {
+            1.0
+        };
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, task_title, ai_importance, ai_urgency, ai_quadrant,
+                        user_importance, user_urgency, user_quadrant, created_at
+                 FROM feedback ORDER BY created_at DESC LIMIT 10",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![], |row| {
+                Ok(FeedbackRecord {
+                    id: row.get(0)?,
+                    task_title: row.get(1)?,
+                    ai_importance: row.get(2)?,
+                    ai_urgency: row.get(3)?,
+                    ai_quadrant: row.get(4)?,
+                    user_importance: row.get(5)?,
+                    user_urgency: row.get(6)?,
+                    user_quadrant: row.get(7)?,
+                    created_at: row.get(8)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut recent = Vec::new();
+        for row in rows {
+            recent.push(row.map_err(|e| e.to_string())?);
+        }
+
+        Ok(LearningStats {
+            total_corrections: total,
+            importance_bias: imp_bias,
+            urgency_bias: urg_bias,
+            accuracy_rate: accuracy,
+            recent_corrections: recent,
         })
     }
 }

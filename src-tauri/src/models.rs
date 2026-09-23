@@ -89,6 +89,28 @@ pub struct DailyCount {
     pub count: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FeedbackRecord {
+    pub id: i64,
+    pub task_title: String,
+    pub ai_importance: f64,
+    pub ai_urgency: f64,
+    pub ai_quadrant: i64,
+    pub user_importance: f64,
+    pub user_urgency: f64,
+    pub user_quadrant: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LearningStats {
+    pub total_corrections: i64,
+    pub importance_bias: f64,
+    pub urgency_bias: f64,
+    pub accuracy_rate: f64,
+    pub recent_corrections: Vec<FeedbackRecord>,
+}
+
 pub const IMPORTANCE_LABELS: [&str; 5] = [
     "无关紧要，没有实际影响",
     "影响较小，锦上添花",

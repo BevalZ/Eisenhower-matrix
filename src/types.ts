@@ -58,6 +58,26 @@ export interface StatsSummary {
   recent_completed: { date: string; count: number }[];
 }
 
+export interface FeedbackRecord {
+  id: number;
+  task_title: string;
+  ai_importance: number;
+  ai_urgency: number;
+  ai_quadrant: number;
+  user_importance: number;
+  user_urgency: number;
+  user_quadrant: number;
+  created_at: number;
+}
+
+export interface LearningStats {
+  total_corrections: number;
+  importance_bias: number;
+  urgency_bias: number;
+  accuracy_rate: number;
+  recent_corrections: FeedbackRecord[];
+}
+
 export const QUADRANT_META: Record<
   Quadrant,
   { name: string; subtitle: string; color: string; bg: string; border: string }

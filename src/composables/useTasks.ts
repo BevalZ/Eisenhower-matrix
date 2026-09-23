@@ -2,7 +2,7 @@ import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Task, TaskInput, ClassificationResult, StatsSummary, Settings,
-  Quadrant, WebdavConfig, SyncResult,
+  Quadrant, WebdavConfig, SyncResult, LearningStats,
 } from "../types";
 
 const tasks = ref<Task[]>([]);
@@ -65,17 +65,42 @@ async function deleteTask(id: number) {
 }
 
 async function moveTask(id: number, quadrant: Quadrant, priority: number) {
-  // Optimistic: update locally
+  // Capture AI original scores before update for feedback
   const task = tasks.value.find((t) => t.id === id);
+  const prevQuadrant = task?.quadrant;
+  const prevImportance = task?.importance_score ?? 2.5;
+  const prevUrgency = task?.urgency_score ?? 2.5;
+  const taskTitle = task?.title ?? "";
+
+  // Optimistic: update locally
   if (task) {
     task.quadrant = quadrant;
     task.priority = priority;
+    // Update scores to reflect new quadrant
+    task.importance_score = quadrant <= 2 ? 3.0 : 2.0;
+    task.urgency_score = quadrant === 1 || quadrant === 3 ? 3.0 : 2.0;
   }
   try {
     await invoke("move_task", { id, quadrant, priority });
+    // Record feedback if user moved to a different quadrant than AI assigned
+    if (prevQuadrant !== undefined && prevQuadrant !== quadrant) {
+      invoke("record_feedback", {
+        taskTitle,
+        aiImportance: prevImportance,
+        aiUrgency: prevUrgency,
+        aiQuadrant: prevQuadrant,
+        userImportance: task?.importance_score ?? 2.5,
+        userUrgency: task?.urgency_score ?? 2.5,
+        userQuadrant: quadrant,
+      }).catch(() => {}); // Fire and forget, don't block
+    }
   } catch {
     await loadTasks();
   }
+}
+
+async function getLearningStats(): Promise<LearningStats> {
+  return await invoke<LearningStats>("get_learning_stats");
 }
 
 async function clearDone() {
@@ -150,6 +175,7 @@ export function useTasks() {
     toggleTaskDone,
     deleteTask,
     moveTask,
+    getLearningStats,
     clearDone,
     getStats,
     setTheme,

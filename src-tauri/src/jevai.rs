@@ -16,6 +16,8 @@ struct ScoreQuestion<'a> {
 pub async fn classify(
     api_key: &str,
     description: &str,
+    imp_bias: f64,
+    urg_bias: f64,
 ) -> Result<ClassificationResult, String> {
     let importance_criteria: Vec<&str> = vec![
         "Trivial or irrelevant, no meaningful impact on any goal",
@@ -66,10 +68,14 @@ pub async fn classify(
 
     let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
 
-    let importance_score = v["answers"]["importance"]["score"]
+    let raw_importance = v["answers"]["importance"]["score"]
         .as_f64()
         .unwrap_or(2.5);
-    let urgency_score = v["answers"]["urgency"]["score"].as_f64().unwrap_or(2.5);
+    let raw_urgency = v["answers"]["urgency"]["score"].as_f64().unwrap_or(2.5);
+
+    // Apply user-calibrated bias from accumulated feedback
+    let importance_score = (raw_importance + imp_bias).clamp(0.0, 4.0);
+    let urgency_score = (raw_urgency + urg_bias).clamp(0.0, 4.0);
 
     let quadrant = scores_to_quadrant(importance_score, urgency_score);
     let priority = compute_priority(importance_score, urgency_score);
