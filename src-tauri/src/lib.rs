@@ -5,6 +5,7 @@ mod webdav;
 
 use models::*;
 use db::Db;
+use tauri::Manager;
 
 struct AppState {
     db: Db,
