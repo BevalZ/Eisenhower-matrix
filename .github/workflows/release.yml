@@ -100,4 +100,12 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
-          uploadPlainBinary: true
+
+      - name: Upload Windows portable .exe
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          cp src-tauri/target/release/eisenhower-matrix.exe "Eisenhower Matrix_${GITHUB_REF_NAME}_x64_portable.exe"
+          gh release upload "$GITHUB_REF_NAME" "Eisenhower Matrix_${GITHUB_REF_NAME}_x64_portable.exe" --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

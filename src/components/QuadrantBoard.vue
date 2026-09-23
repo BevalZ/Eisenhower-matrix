@@ -26,8 +26,8 @@ function onDragLeave(q: Quadrant) {
 }
 async function onDrop(e: DragEvent, q: Quadrant) {
   e.preventDefault();
-  const id = Number(e.dataTransfer?.getData("text/plain"));
-  if (!id || !draggingTask.value) return;
+  if (!draggingTask.value) return;
+  const id = draggingTask.value.id;
 
   const list = tasksByQuadrant(q);
   const maxP = list.length ? Math.max(...list.map((t) => t.priority)) : 0;
