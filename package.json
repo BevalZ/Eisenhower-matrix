@@ -1,0 +1,24 @@
+{
+  "name": "eisenhower-matrix",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Eisenhower Matrix desktop task manager with AI-powered quadrant classification (JevAI / TypeSafe AI)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "vue": "^3.4.0",
+    "@tauri-apps/api": "^2.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@vitejs/plugin-vue": "^5.0.0",
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0",
+    "vue-tsc": "^2.0.0"
+  }
+}
