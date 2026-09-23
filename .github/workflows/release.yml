@@ -72,6 +72,17 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "Eisenhower Matrix ${{ github.event.inputs.tag || github.ref_name }}"
           releaseBody: |
+            ## 新功能
+
+            - **悬浮球模式**：主窗口可一键收缩为桌面悬浮球，点击恢复
+            - **AI 学习进化**：记录用户对 AI 象限判断的修正，自动校准评分偏差
+            - **对话式任务创建**：多轮询问自动判断重要性与紧急性
+            - **四象限看板**：拖拽移动任务，自动排序优先级
+            - **统计面板**：完成率、各象限分布、近7日趋势
+            - **主题切换**：浅色/深色双主题
+            - **数据导入导出**：JSON 备份与恢复
+            - **WebDAV 同步**：跨设备数据同步
+
             ## 安装
 
             下载对应平台的安装包：
@@ -86,6 +97,6 @@ jobs:
             2. 点击右上角 ⚙ 设置，配置 TypeSafe AI API Key（可选）
             3. 点击「+ 新建任务」开始使用
 
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
