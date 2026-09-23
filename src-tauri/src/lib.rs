@@ -122,6 +122,29 @@ fn get_learning_stats(state: tauri::State<AppState>) -> Result<LearningStats, St
     state.db.get_learning_stats()
 }
 
+// ---- Window / Floating Ball ----
+
+#[tauri::command]
+fn minimize_to_ball(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(main) = tauri::WebviewWindow::get(&app, "main") {
+        main.hide().map_err(|e| e.to_string())?;
+    }
+    let ball = tauri::WebviewWindow::get(&app, "floating-ball").ok_or("no ball")?;
+    ball.show().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn restore_from_ball(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(ball) = tauri::WebviewWindow::get(&app, "floating-ball") {
+        ball.hide().map_err(|e| e.to_string())?;
+    }
+    let main = tauri::WebviewWindow::get(&app, "main").ok_or("no main")?;
+    main.show().map_err(|e| e.to_string())?;
+    main.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ---- Import / Export ----
 
 #[tauri::command]
@@ -189,6 +212,8 @@ pub fn run() {
             import_data,
             sync_to_webdav,
             restore_from_webdav,
+            minimize_to_ball,
+            restore_from_ball,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

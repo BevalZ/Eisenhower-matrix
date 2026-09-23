@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, computed } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import QuadrantBoard from "./components/QuadrantBoard.vue";
 import TaskWizard from "./components/TaskWizard.vue";
 import StatsPanel from "./components/StatsPanel.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
+import FloatingBall from "./components/FloatingBall.vue";
 import { useTasks } from "./composables/useTasks";
 
 const { loadTasks, loadSettings, clearDone, loading, applyTheme, settings } = useTasks();
@@ -12,14 +15,29 @@ const view = ref<"board" | "stats">("board");
 const showWizard = ref(false);
 const showSettings = ref(false);
 
+const windowLabel = getCurrentWindow().label;
+const isBallWindow = computed(() => windowLabel === "floating-ball");
+
+async function minimizeToBall() {
+  await invoke("minimize_to_ball");
+}
+
 onMounted(async () => {
+  if (isBallWindow.value) {
+    document.body.style.background = "transparent";
+    return;
+  }
   await Promise.all([loadTasks(), loadSettings()]);
   applyTheme(settings.value.theme || "light");
 });
 </script>
 
 <template>
-  <div class="app">
+  <!-- Floating ball window -->
+  <FloatingBall v-if="isBallWindow" />
+
+  <!-- Main window -->
+  <div v-else class="app">
     <!-- Title bar -->
     <header class="titlebar">
       <div class="brand">
@@ -52,6 +70,12 @@ onMounted(async () => {
       <div class="actions">
         <button class="btn btn-ghost btn-sm" @click="clearDone">
           清除已完成
+        </button>
+        <button class="icon-btn" @click="minimizeToBall" title="转为悬浮球">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="8" cy="8" r="6"/>
+            <circle cx="8" cy="8" r="2.5"/>
+          </svg>
         </button>
         <button class="icon-btn" @click="showSettings = true" title="设置">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
