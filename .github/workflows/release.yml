@@ -71,7 +71,6 @@ jobs:
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "Eisenhower Matrix ${{ github.event.inputs.tag || github.ref_name }}"
-          removeArtifacts: true
           releaseBody: |
             ## 安装
 

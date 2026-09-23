@@ -24,7 +24,11 @@ function onPointerMove(e: PointerEvent) {
   if (!dragging.value) return;
   const dx = e.clientX - startX;
   const dy = e.clientY - startY;
-  getCurrentWindow().setPosition({ x: startWinX + dx, y: startWinY + dy });
+  getCurrentWindow().setPosition({
+    type: "physical",
+    x: startWinX + dx,
+    y: startWinY + dy,
+  } as any);
 }
 
 async function onPointerUp(e: PointerEvent) {
@@ -32,42 +36,31 @@ async function onPointerUp(e: PointerEvent) {
   dragging.value = false;
   ball.value?.releasePointerCapture(e.pointerId);
 
-  // Snap to nearest edge
+  // Snap to nearest edge using screen width
   const win = getCurrentWindow();
   const pos = await win.outerPosition();
+  const screenW = window.screen.availWidth;
   const size = await win.outerSize();
-  const monitor = await win.currentMonitor();
-  const m = monitor!;
-  const winX = pos.x - m.position.x;
-  const winY = pos.y - m.position.y;
-  const midX = winX + size.width / 2;
-  const screenW = m.size.width;
+  const midX = pos.x + size.width / 2;
 
   if (midX < screenW / 2) {
-    // Snap left
-    win.setPosition({ x: m.position.x + 8, y: pos.y });
-    setTimeout(() => { hidden.value = true; }, 300);
+    win.setPosition({ type: "physical", x: 4, y: pos.y } as any);
   } else {
-    // Snap right
-    win.setPosition({ x: m.position.x + m.size.width - size.width - 8, y: pos.y });
-    setTimeout(() => { hidden.value = true; }, 300);
+    win.setPosition({ type: "physical", x: screenW - size.width - 4, y: pos.y } as any);
   }
+  setTimeout(() => { hidden.value = true; }, 300);
 }
 
 async function onClick() {
   if (dragging.value) return;
   if (hidden.value) {
-    // First click: unhide
     hidden.value = false;
     return;
   }
   await invoke("restore_from_ball");
 }
 
-onMounted(() => {
-  // Unhide when mouse approaches (for edge-hidden ball)
-  getCurrentWindow().setIgnoreCursorEvents(true);
-});
+onMounted(() => {});
 </script>
 
 <template>
