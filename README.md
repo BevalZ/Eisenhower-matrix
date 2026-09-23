@@ -2,11 +2,12 @@
 
 > 基于艾森豪威尔矩阵的 AI 驱动桌面任务管理工具
 
-[![CI](https://github.com/yourname/eisenhower-matrix/actions/workflows/release.yml/badge.svg)](https://github.com/yourname/eisenhower-matrix/actions/workflows/release.yml)
-[![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)](https://github.com/yourname/eisenhower-matrix/releases)
-[![Tauri](https://img.shields.io/badge/Tauri-2.0-FFC131?logo=tauri)](https://tauri.app)
-[![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js)](https://vuejs.org)
-[![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust)](https://www.rust-lang.org)
+[![CI](https://github.com/BevalZ/Eisenhower-matrix/actions/workflows/ci.yml/badge.svg)](https://github.com/BevalZ/Eisenhower-matrix/actions)
+[![Release](https://github.com/BevalZ/Eisenhower-matrix/actions/workflows/release.yml/badge.svg)](https://github.com/BevalZ/Eisenhower-matrix/releases)
+[![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)](https://github.com/BevalZ/Eisenhower-matrix/releases)
+[![Tauri](https://img.shields.io/badge/Tauri-2.0-FFC131?logo=tauri&logoColor=white)](https://tauri.app)
+[![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js&logoColor=white)](https://vuejs.org)
+[![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
 > *"The key is not to prioritize what's on your schedule, but to schedule your priorities."*
@@ -82,7 +83,7 @@
 
 ```bash
 # 克隆
-git clone https://github.com/yourname/eisenhower-matrix.git
+git clone https://github.com/BevalZ/Eisenhower-matrix.git
 cd eisenhower-matrix
 
 # 安装依赖
