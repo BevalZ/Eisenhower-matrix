@@ -71,12 +71,13 @@ jobs:
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "Eisenhower Matrix ${{ github.event.inputs.tag || github.ref_name }}"
+          removeArtifacts: true
           releaseBody: |
             ## 安装
 
             下载对应平台的安装包：
 
-            - **Windows**: `.msi` 或 `.exe`
+            - **Windows**: NSIS 安装版 `.exe` 或便携版 `.exe`（免安装）
             - **macOS**: `.dmg` (Intel / Apple Silicon)
             - **Linux**: `.deb` 或 `.AppImage`
 
