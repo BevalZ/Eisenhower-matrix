@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v1.0.0)"
+        required: true
+        type: string
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: "macos-latest"
+            args: "--target aarch64-apple-darwin"
+            rust_target: "aarch64-apple-darwin"
+          - platform: "macos-latest"
+            args: "--target x86_64-apple-darwin"
+            rust_target: "x86_64-apple-darwin"
+          - platform: "ubuntu-22.04"
+            args: ""
+            rust_target: "x86_64-unknown-linux-gnu"
+          - platform: "windows-latest"
+            args: ""
+            rust_target: "x86_64-pc-windows-msvc"
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build icons
+        run: |
+          if [ ! -f "src-tauri/icons/icon.png" ]; then
+            echo "No icon found, generating placeholder..."
+            mkdir -p src-tauri/icons
+            node -e "
+              const { createCanvas } = require('canvas');
+            " 2>/dev/null || true
+          fi
+          npx tauri icon src-tauri/icons/app-icon.png 2>/dev/null || echo "No source icon, skipping icon generation"
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "Eisenhower Matrix ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseBody: |
+            ## 安装
+
+            下载对应平台的安装包：
+
+            - **Windows**: `.msi` 或 `.exe`
+            - **macOS**: `.dmg` (Intel / Apple Silicon)
+            - **Linux**: `.deb` 或 `.AppImage`
+
+            ## 首次使用
+
+            1. 安装后打开应用
+            2. 点击右上角 ⚙ 设置，配置 TypeSafe AI API Key（可选）
+            3. 点击「+ 新建任务」开始使用
+
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
