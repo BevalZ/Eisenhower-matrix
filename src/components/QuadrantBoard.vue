@@ -29,19 +29,18 @@ async function onDrop(e: DragEvent, q: Quadrant) {
   const id = Number(e.dataTransfer?.getData("text/plain"));
   if (!id || !draggingTask.value) return;
 
-  // Determine new priority: place at top of target quadrant
   const list = tasksByQuadrant(q);
   const maxP = list.length ? Math.max(...list.map((t) => t.priority)) : 0;
-  const newPriority = draggingTask.value.quadrant === q
-    ? draggingTask.value.priority
-    : Math.min(100, maxP + 5);
+  const newPriority =
+    draggingTask.value.quadrant === q
+      ? draggingTask.value.priority
+      : Math.min(100, maxP + 5);
 
   await moveTask(id, q, newPriority);
   onDragEnd();
 }
 
 const quadrants: Quadrant[] = [1, 2, 3, 4];
-// Layout: [Q1 Q2] / [Q3 Q4] — Q1 top-right (important+urgent), Q2 top-left
 const layout: Record<Quadrant, { row: number; col: number }> = {
   1: { row: 0, col: 1 },
   2: { row: 0, col: 0 },
@@ -52,45 +51,59 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
 
 <template>
   <div class="board">
-    <div class="axis-label axis-y">重要 →</div>
-    <div class="grid">
-      <div
-        v-for="q in quadrants"
-        :key="q"
-        class="quadrant"
-        :style="{
-          gridRow: layout[q].row + 1,
-          gridColumn: layout[q].col + 1,
-          background: QUADRANT_META[q].bg,
-          borderColor:
-            dragOverQuadrant === q ? QUADRANT_META[q].color : QUADRANT_META[q].border,
-        }"
-        @dragover="onDragOver($event, q)"
-        @dragleave="onDragLeave(q)"
-        @drop="onDrop($event, q)"
-      >
-        <div class="q-header">
-          <span class="q-title" :style="{ color: QUADRANT_META[q].color }">
-            {{ QUADRANT_META[q].name }}
-          </span>
-          <span class="q-sub">{{ QUADRANT_META[q].subtitle }}</span>
-          <span class="q-count">{{ tasksByQuadrant(q).length }}</span>
-        </div>
-        <div class="q-body">
-          <TaskCard
-            v-for="task in tasksByQuadrant(q)"
-            :key="task.id"
-            :task="task"
-            @toggle="toggleTaskDone"
-            @remove="deleteTask"
-            @dragstart="onDragStart"
-            @dragend="onDragEnd"
-          />
-          <div v-if="!tasksByQuadrant(q).length" class="empty">拖拽任务到这里</div>
+    <div class="axis-axis">
+      <span class="axis-label axis-y">↑ 重要</span>
+      <div class="grid">
+        <div
+          v-for="q in quadrants"
+          :key="q"
+          class="quadrant"
+          :class="{
+            'drag-over': dragOverQuadrant === q,
+          }"
+          :style="{
+            gridRow: layout[q].row + 1,
+            gridColumn: layout[q].col + 1,
+          }"
+          @dragover="onDragOver($event, q)"
+          @dragleave="onDragLeave(q)"
+          @drop="onDrop($event, q)"
+        >
+          <div class="q-header">
+            <span
+              class="q-bar"
+              :style="{ background: QUADRANT_META[q].color }"
+            ></span>
+            <div class="q-title-wrap">
+              <span class="q-title" :style="{ color: QUADRANT_META[q].color }">
+                {{ QUADRANT_META[q].name }}
+              </span>
+              <span class="q-sub">{{ QUADRANT_META[q].subtitle }}</span>
+            </div>
+            <span class="q-count">{{ tasksByQuadrant(q).length }}</span>
+          </div>
+          <div class="q-body">
+            <TaskCard
+              v-for="task in tasksByQuadrant(q)"
+              :key="task.id"
+              :task="task"
+              @toggle="toggleTaskDone"
+              @remove="deleteTask"
+              @dragstart="onDragStart"
+              @dragend="onDragEnd"
+            />
+            <div v-if="!tasksByQuadrant(q).length" class="empty">
+              <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.2">
+                <rect x="4" y="4" width="20" height="20" rx="3" stroke-dasharray="3 3"/>
+                <path d="M14 10v8M10 14h8" stroke-linecap="round"/>
+              </svg>
+              <span>拖入任务</span>
+            </div>
+          </div>
         </div>
       </div>
+      <span class="axis-label axis-x">← 不紧急 &nbsp;&nbsp;|&nbsp;&nbsp; 紧急 →</span>
     </div>
-    <div class="axis-label axis-x">不紧急 ←—— 紧急 →</div>
   </div>
 </template>
 
@@ -100,22 +113,31 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   display: flex;
   flex-direction: column;
   padding: 16px;
-  gap: 8px;
   overflow: hidden;
+}
+.axis-axis {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
 }
 .axis-label {
   font-size: 11px;
   color: var(--text-muted);
   text-align: center;
-  padding: 0 8px;
+  padding: 0 4px;
+  letter-spacing: 0.5px;
 }
 .axis-y {
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
   position: absolute;
-  left: 4px;
+  left: -2px;
   top: 50%;
-  transform: translateY(-50%) rotate(180deg);
+  transform: translateY(-50%) rotate(-90deg);
+  transform-origin: left center;
+  white-space: nowrap;
+}
+.axis-x {
+  margin-top: 8px;
 }
 .grid {
   flex: 1;
@@ -123,26 +145,48 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   grid-template-columns: 1fr 1fr;
   grid-template-rows: 1fr 1fr;
   gap: 12px;
-  position: relative;
+  padding-left: 16px;
 }
 .quadrant {
-  border: 2px dashed var(--border);
+  background: var(--surface);
+  border: 1px solid var(--border-light);
   border-radius: var(--radius);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  transition: border-color 0.15s;
+  transition: border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+  box-shadow: var(--shadow-xs);
+}
+.quadrant.drag-over {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-light);
+  transform: scale(1.01);
 }
 .q-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--surface-2);
+}
+.q-bar {
+  width: 4px;
+  height: 20px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.q-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 .q-title {
   font-weight: 600;
   font-size: 13px;
+  line-height: 1.2;
 }
 .q-sub {
   font-size: 11px;
@@ -151,10 +195,13 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
 .q-count {
   margin-left: auto;
   font-size: 11px;
+  font-weight: 600;
   background: var(--surface);
-  padding: 2px 8px;
+  border: 1px solid var(--border-light);
+  padding: 2px 9px;
   border-radius: 10px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 .q-body {
   flex: 1;
@@ -162,9 +209,13 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   padding: 10px;
 }
 .empty {
-  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
   color: var(--text-muted);
   font-size: 12px;
-  padding: 30px 0;
+  padding: 40px 0;
+  opacity: 0.6;
 }
 </style>

@@ -16,14 +16,31 @@ async function save() {
   await saveApiKey(key.value.trim());
   saved.value = true;
   key.value = "";
-  setTimeout(() => (saved.value = false), 2000);
+  setTimeout(() => (saved.value = false), 2500);
 }
 </script>
 
 <template>
   <div class="overlay" @click.self="emit('close')">
-    <div class="dialog">
-      <h3>设置</h3>
+    <div class="dialog anim-popIn">
+      <div class="dialog-head">
+        <div class="head-icon">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="10" cy="10" r="3"/>
+            <path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.5 4.5l1.4 1.4M14.1 14.1l1.4 1.4M4.5 15.5l1.4-1.4M14.1 5.9l1.4-1.4"/>
+          </svg>
+        </div>
+        <div>
+          <h3>设置</h3>
+          <p class="head-sub">配置 AI 服务连接</p>
+        </div>
+        <button class="close-btn" @click="emit('close')">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <path d="M3 3l8 8M11 3l-8 8"/>
+          </svg>
+        </button>
+      </div>
+
       <div class="field">
         <label>TypeSafe AI (JevAI) API Key</label>
         <div class="key-row">
@@ -39,11 +56,14 @@ async function save() {
         <p class="hint">
           前往
           <a href="https://dashboard.typesafe.ai" target="_blank">dashboard.typesafe.ai</a>
-          获取 API Key。配置后即可使用 AI 自动判断任务象限。
+          获取 API Key。配置后 AI 将自动分析任务的重要性与紧急性。
         </p>
-        <p v-if="settings.api_key_configured" class="status ok">✓ 已配置 API Key</p>
-        <p v-else class="status warn">⚠ 尚未配置，AI 分析功能不可用</p>
+        <div class="status" :class="settings.api_key_configured ? 'ok' : 'warn'">
+          <span class="status-dot"></span>
+          {{ settings.api_key_configured ? "已配置 API Key，AI 分析可用" : "尚未配置，AI 分析功能不可用" }}
+        </div>
       </div>
+
       <div class="footer">
         <button class="btn btn-ghost" @click="emit('close')">关闭</button>
         <button class="btn btn-primary" :disabled="!key.trim() || saved" @click="save">
@@ -58,30 +78,69 @@ async function save() {
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(29, 33, 41, 0.5);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 100;
 }
 .dialog {
-  width: 420px;
+  width: 440px;
   background: var(--surface);
-  border-radius: 14px;
-  padding: 22px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow-lg);
+}
+.dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.head-icon {
+  width: 36px;
+  height: 36px;
+  background: var(--primary-light);
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary);
 }
 h3 {
-  margin-bottom: 16px;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.head-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.close-btn {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+}
+.close-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
 }
 .field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 label {
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
+  color: var(--text-secondary);
 }
 .key-row {
   display: flex;
@@ -90,25 +149,47 @@ label {
 .hint {
   font-size: 12px;
   color: var(--text-muted);
-  line-height: 1.5;
+  line-height: 1.6;
 }
 .hint a {
   color: var(--primary);
+  text-decoration: none;
+}
+.hint a:hover {
+  text-decoration: underline;
 }
 .status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   margin-top: 4px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+}
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
 }
 .status.ok {
+  background: var(--success-light);
   color: var(--success);
 }
+.status.ok .status-dot {
+  background: var(--success);
+}
 .status.warn {
-  color: #d69e2e;
+  background: var(--warning-light);
+  color: var(--warning);
+}
+.status.warn .status-dot {
+  background: var(--warning);
 }
 .footer {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 18px;
+  margin-top: 20px;
 }
 </style>

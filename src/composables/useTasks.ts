@@ -30,28 +30,59 @@ async function classifyTask(description: string): Promise<ClassificationResult> 
 
 async function createTask(input: TaskInput): Promise<Task> {
   const task = await invoke<Task>("create_task", { input });
-  await loadTasks();
+  // Optimistic: append locally without full reload
+  tasks.value = [...tasks.value, task];
   return task;
 }
 
 async function toggleTaskDone(id: number) {
-  await invoke("toggle_task_done", { id });
-  await loadTasks();
+  // Optimistic update
+  const task = tasks.value.find((t) => t.id === id);
+  if (task) {
+    task.done = !task.done;
+    task.completed_at = task.done ? Date.now() : null;
+  }
+  try {
+    await invoke("toggle_task_done", { id });
+  } catch {
+    // Rollback on failure
+    if (task) task.done = !task.done;
+  }
 }
 
 async function deleteTask(id: number) {
-  await invoke("delete_task", { id });
-  await loadTasks();
+  // Optimistic: remove locally
+  const idx = tasks.value.findIndex((t) => t.id === id);
+  if (idx >= 0) tasks.value.splice(idx, 1);
+  try {
+    await invoke("delete_task", { id });
+  } catch {
+    await loadTasks(); // Reload on failure
+  }
 }
 
 async function moveTask(id: number, quadrant: Quadrant, priority: number) {
-  await invoke("move_task", { id, quadrant, priority });
-  await loadTasks();
+  // Optimistic: update locally
+  const task = tasks.value.find((t) => t.id === id);
+  if (task) {
+    task.quadrant = quadrant;
+    task.priority = priority;
+  }
+  try {
+    await invoke("move_task", { id, quadrant, priority });
+  } catch {
+    await loadTasks();
+  }
 }
 
 async function clearDone() {
-  await invoke("clear_done_tasks");
-  await loadTasks();
+  // Optimistic: remove done tasks
+  tasks.value = tasks.value.filter((t) => !t.done);
+  try {
+    await invoke("clear_done_tasks");
+  } catch {
+    await loadTasks();
+  }
 }
 
 async function getStats(): Promise<StatsSummary> {
