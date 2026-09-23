@@ -126,20 +126,20 @@ fn get_learning_stats(state: tauri::State<AppState>) -> Result<LearningStats, St
 
 #[tauri::command]
 fn minimize_to_ball(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(main) = tauri::WebviewWindow::get(&app, "main") {
+    if let Some(main) = app.get_webview_window("main") {
         main.hide().map_err(|e| e.to_string())?;
     }
-    let ball = tauri::WebviewWindow::get(&app, "floating-ball").ok_or("no ball")?;
+    let ball = app.get_webview_window("floating-ball").ok_or("no ball")?;
     ball.show().map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 fn restore_from_ball(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(ball) = tauri::WebviewWindow::get(&app, "floating-ball") {
+    if let Some(ball) = app.get_webview_window("floating-ball") {
         ball.hide().map_err(|e| e.to_string())?;
     }
-    let main = tauri::WebviewWindow::get(&app, "main").ok_or("no main")?;
+    let main = app.get_webview_window("main").ok_or("no main")?;
     main.show().map_err(|e| e.to_string())?;
     main.set_focus().map_err(|e| e.to_string())?;
     Ok(())
