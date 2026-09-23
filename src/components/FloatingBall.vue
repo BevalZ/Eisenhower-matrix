@@ -1,83 +1,29 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 
-const ball = ref<HTMLElement>();
-const dragging = ref(false);
-const hidden = ref(false);
-let startX = 0, startY = 0, startWinX = 0, startWinY = 0;
-
-async function onPointerDown(e: PointerEvent) {
-  dragging.value = true;
-  hidden.value = false;
-  startX = e.clientX;
-  startY = e.clientY;
-  const win = getCurrentWindow();
-  const pos = await win.outerPosition();
-  startWinX = pos.x;
-  startWinY = pos.y;
-  ball.value?.setPointerCapture(e.pointerId);
-}
-
-function onPointerMove(e: PointerEvent) {
-  if (!dragging.value) return;
-  const dx = e.clientX - startX;
-  const dy = e.clientY - startY;
-  getCurrentWindow().setPosition({
-    type: "physical",
-    x: startWinX + dx,
-    y: startWinY + dy,
-  } as any);
-}
-
-async function onPointerUp(e: PointerEvent) {
-  if (!dragging.value) return;
-  dragging.value = false;
-  ball.value?.releasePointerCapture(e.pointerId);
-
-  // Snap to nearest edge using screen width
-  const win = getCurrentWindow();
-  const pos = await win.outerPosition();
-  const screenW = window.screen.availWidth;
-  const size = await win.outerSize();
-  const midX = pos.x + size.width / 2;
-
-  if (midX < screenW / 2) {
-    win.setPosition({ type: "physical", x: 4, y: pos.y } as any);
-  } else {
-    win.setPosition({ type: "physical", x: screenW - size.width - 4, y: pos.y } as any);
-  }
-  setTimeout(() => { hidden.value = true; }, 300);
-}
+const clickedOnce = ref(false);
 
 async function onClick() {
-  if (dragging.value) return;
-  if (hidden.value) {
-    hidden.value = false;
+  if (!clickedOnce.value) {
+    clickedOnce.value = true;
     return;
   }
   await invoke("restore_from_ball");
 }
-
-onMounted(() => {});
 </script>
 
 <template>
   <div
-    ref="ball"
     class="floating-ball"
-    :class="{ dragging, hidden }"
-    @pointerdown="onPointerDown"
-    @pointermove="onPointerMove"
-    @pointerup="onPointerUp"
+    data-tauri-drag-region
     @click="onClick"
   >
-    <svg width="28" height="28" viewBox="0 0 20 20" fill="none">
+    <svg width="26" height="26" viewBox="0 0 20 20" fill="none">
       <rect x="1" y="1" width="8" height="8" rx="1.5" fill="white" opacity="0.95"/>
-      <rect x="11" y="1" width="8" height="8" rx="1.5" fill="white" opacity="0.7"/>
-      <rect x="1" y="11" width="8" height="8" rx="1.5" fill="white" opacity="0.7"/>
-      <rect x="11" y="11" width="8" height="8" rx="1.5" fill="white" opacity="0.5"/>
+      <rect x="11" y="1" width="8" height="8" rx="1.5" fill="white" opacity="0.75"/>
+      <rect x="1" y="11" width="8" height="8" rx="1.5" fill="white" opacity="0.75"/>
+      <rect x="11" y="11" width="8" height="8" rx="1.5" fill="white" opacity="0.55"/>
     </svg>
   </div>
 </template>
@@ -91,21 +37,12 @@ onMounted(() => {});
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: grab;
-  box-shadow: 0 4px 20px rgba(52, 87, 213, 0.4);
-  transition: transform 0.25s ease, opacity 0.25s ease, box-shadow 0.25s ease;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(52, 87, 213, 0.45);
   user-select: none;
+  -webkit-user-select: none;
 }
-.floating-ball:hover {
-  transform: scale(1.08);
-  box-shadow: 0 6px 28px rgba(52, 87, 213, 0.55);
-}
-.floating-ball.dragging {
-  cursor: grabbing;
-  transform: scale(1.12);
-}
-.floating-ball.hidden {
-  opacity: 0.35;
-  transform: scale(0.85);
+.floating-ball:active {
+  transform: scale(0.95);
 }
 </style>

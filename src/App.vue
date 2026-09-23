@@ -24,6 +24,7 @@ async function minimizeToBall() {
 
 onMounted(async () => {
   if (isBallWindow.value) {
+    document.documentElement.style.background = "transparent";
     document.body.style.background = "transparent";
     return;
   }
