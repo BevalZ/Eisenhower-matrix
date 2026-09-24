@@ -1,7 +1,7 @@
 {
   "name": "eisenhower-matrix",
   "private": true,
-  "version": "3.0.3",
+  "version": "3.1.0",
   "type": "module",
   "description": "Eisenhower Matrix desktop task manager with AI-powered quadrant classification (JevAI / TypeSafe AI)",
   "scripts": {
