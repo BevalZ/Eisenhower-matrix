@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onUnmounted } from "vue";
 import TaskCard from "./TaskCard.vue";
 import type { Task, Quadrant } from "../types";
 import { QUADRANT_META } from "../types";
@@ -12,9 +12,24 @@ const draggingTask = ref<Task | null>(null);
 const dragPos = ref({ x: 0, y: 0 });
 let dragStartX = 0, dragStartY = 0;
 let isPotentialDrag = false;
+let pendingTask: Task | null = null;
+
+function priorityAt(list: Task[], index: number): number {
+  const above = list[index - 1];
+  const below = list[index];
+  if (!above && !below) return 50;
+  if (!above) return Math.min(100, below.priority + 5);
+  if (!below) return Math.max(0, above.priority - 5);
+  return (above.priority + below.priority) / 2;
+}
+
+function isQuadrant(value: number): value is Quadrant {
+  return value === 1 || value === 2 || value === 3 || value === 4;
+}
 
 function onCardPointerDown(e: PointerEvent, task: Task) {
   if (e.button !== 0) return;
+  pendingTask = task;
   isPotentialDrag = true;
   dragStartX = e.clientX;
   dragStartY = e.clientY;
@@ -24,50 +39,53 @@ function onCardPointerDown(e: PointerEvent, task: Task) {
 }
 
 function onPointerMove(e: PointerEvent) {
-  if (!isPotentialDrag) return;
+  if (!isPotentialDrag || !pendingTask) return;
   const dx = e.clientX - dragStartX;
   const dy = e.clientY - dragStartY;
-  // Threshold: only start drag after moving 5px
   if (!draggingTask.value && Math.hypot(dx, dy) < 5) return;
+  if (!draggingTask.value) draggingTask.value = pendingTask;
 
   dragPos.value = { x: e.clientX, y: e.clientY };
 
-  // Find which quadrant element is under the pointer
   const el = document.elementFromPoint(e.clientX, e.clientY);
   const quadrantEl = el?.closest("[data-quadrant]") as HTMLElement | null;
-  if (quadrantEl) {
-    dragOverQuadrant.value = Number(quadrantEl.dataset.quadrant) as Quadrant;
-  } else {
-    dragOverQuadrant.value = null;
-  }
+  const quadrant = Number(quadrantEl?.dataset.quadrant);
+  dragOverQuadrant.value = isQuadrant(quadrant) ? quadrant : null;
 }
 
 async function onPointerUp(e: PointerEvent) {
   window.removeEventListener("pointermove", onPointerMove);
   window.removeEventListener("pointerup", onPointerUp);
   isPotentialDrag = false;
-
-  if (!draggingTask.value) return;
   const task = draggingTask.value;
+  pendingTask = null;
 
-  // Find target quadrant
-  const el = document.elementFromPoint(e.clientX, e.clientY);
-  const quadrantEl = el?.closest("[data-quadrant]") as HTMLElement | null;
-  if (quadrantEl) {
-    const q = Number(quadrantEl.dataset.quadrant) as Quadrant;
-    if (q !== task.quadrant) {
-      const list = tasksByQuadrant(q);
-      const maxP = list.length ? Math.max(...list.map((t) => t.priority)) : 0;
-      await moveTask(task.id, q, Math.min(100, maxP + 5));
+  if (task) {
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const quadrantEl = el?.closest("[data-quadrant]") as HTMLElement | null;
+    const q = Number(quadrantEl?.dataset.quadrant);
+    if (quadrantEl && isQuadrant(q)) {
+      const cards = [...quadrantEl.querySelectorAll<HTMLElement>("[data-task-id]")]
+        .filter((card) => card.dataset.taskId !== String(task.id));
+      let index = cards.length;
+      for (let i = 0; i < cards.length; i++) {
+        const rect = cards[i].getBoundingClientRect();
+        if (e.clientY < rect.top + rect.height / 2) {
+          index = i;
+          break;
+        }
+      }
+      const currentIndex = tasksByQuadrant(task.quadrant).findIndex((item) => item.id === task.id);
+      if (!(q === task.quadrant && index === currentIndex)) {
+        const list = tasksByQuadrant(q).filter((item) => item.id !== task.id);
+        const priority = Math.min(100, Math.max(0, priorityAt(list, index)));
+        await moveTask(task.id, q, priority);
+      }
     }
   }
 
   draggingTask.value = null;
   dragOverQuadrant.value = null;
-}
-
-function startDrag(task: Task) {
-  draggingTask.value = task;
 }
 
 onUnmounted(() => {
@@ -115,7 +133,6 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
               :task="task"
               @toggle="toggleTaskDone"
               @remove="deleteTask"
-              @drag-start="startDrag"
               @pointer-down="onCardPointerDown"
             />
             <div v-if="!tasksByQuadrant(q).length" class="empty">

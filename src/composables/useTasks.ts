@@ -1,20 +1,35 @@
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type {
-  Task, TaskInput, ClassificationResult, StatsSummary, Settings,
-  Quadrant, WebdavConfig, SyncResult, LearningStats,
+import { listen } from "@tauri-apps/api/event";
+import {
+  quadrantFromScores,
+  scoresForQuadrant,
+  type Task, type TaskInput, type ClassificationResult, type StatsSummary, type Settings,
+  type Quadrant, type WebdavConfig, type SyncResult, type LearningStats,
+  type TailscaleStatus, type PeerSyncStatus,
 } from "../types";
+
+interface QuadrantCorrection {
+  taskTitle: string;
+  aiImportance: number;
+  aiUrgency: number;
+  aiQuadrant: number;
+  userImportance: number;
+  userUrgency: number;
+  userQuadrant: Quadrant;
+}
 
 const tasks = ref<Task[]>([]);
 const loading = ref(false);
 const settings = ref<Settings>({ api_key_configured: false, theme: "light", webdav_configured: false });
 
-async function loadTasks() {
-  loading.value = true;
+async function loadTasks(options?: { quiet?: boolean }) {
+  const quiet = options?.quiet ?? false;
+  if (!quiet) loading.value = true;
   try {
     tasks.value = await invoke<Task[]>("get_tasks");
   } finally {
-    loading.value = false;
+    if (!quiet) loading.value = false;
   }
 }
 
@@ -39,17 +54,17 @@ async function createTask(input: TaskInput): Promise<Task> {
 }
 
 async function toggleTaskDone(id: number) {
-  // Optimistic update
   const task = tasks.value.find((t) => t.id === id);
-  if (task) {
-    task.done = !task.done;
-    task.completed_at = task.done ? Date.now() : null;
-  }
+  if (!task) return;
+  const prevDone = task.done;
+  const prevCompleted = task.completed_at;
+  task.done = !task.done;
+  task.completed_at = task.done ? Date.now() : null;
   try {
     await invoke("toggle_task_done", { id });
   } catch {
-    // Rollback on failure
-    if (task) task.done = !task.done;
+    task.done = prevDone;
+    task.completed_at = prevCompleted;
   }
 }
 
@@ -64,38 +79,36 @@ async function deleteTask(id: number) {
   }
 }
 
-async function moveTask(id: number, quadrant: Quadrant, priority: number) {
-  // Capture AI original scores before update for feedback
-  const task = tasks.value.find((t) => t.id === id);
-  const prevQuadrant = task?.quadrant;
-  const prevImportance = task?.importance_score ?? 2.5;
-  const prevUrgency = task?.urgency_score ?? 2.5;
-  const taskTitle = task?.title ?? "";
+function recordQuadrantCorrection(input: QuadrantCorrection) {
+  invoke("record_feedback", { ...input }).catch(() => {});
+}
 
-  // Optimistic: update locally
-  if (task) {
-    task.quadrant = quadrant;
-    task.priority = priority;
-    // Update scores to reflect new quadrant
-    task.importance_score = quadrant <= 2 ? 3.0 : 2.0;
-    task.urgency_score = quadrant === 1 || quadrant === 3 ? 3.0 : 2.0;
-  }
+async function moveTask(id: number, quadrant: Quadrant, priority: number) {
+  const task = tasks.value.find((t) => t.id === id);
+  if (!task) return;
+  const prevQuadrant = task.quadrant;
+  const prevPriority = task.priority;
+  const scoresMatchOrigin =
+    quadrantFromScores(task.importance_score, task.urgency_score) === prevQuadrant;
+  task.quadrant = quadrant;
+  task.priority = priority;
   try {
     await invoke("move_task", { id, quadrant, priority });
-    // Record feedback if user moved to a different quadrant than AI assigned
-    if (prevQuadrant !== undefined && prevQuadrant !== quadrant) {
-      invoke("record_feedback", {
-        taskTitle,
-        aiImportance: prevImportance,
-        aiUrgency: prevUrgency,
+    if (scoresMatchOrigin && prevQuadrant !== quadrant) {
+      const user = scoresForQuadrant(task.importance_score, task.urgency_score, quadrant);
+      recordQuadrantCorrection({
+        taskTitle: task.title,
+        aiImportance: task.importance_score,
+        aiUrgency: task.urgency_score,
         aiQuadrant: prevQuadrant,
-        userImportance: task?.importance_score ?? 2.5,
-        userUrgency: task?.urgency_score ?? 2.5,
+        userImportance: user.importance,
+        userUrgency: user.urgency,
         userQuadrant: quadrant,
-      }).catch(() => {}); // Fire and forget, don't block
+      });
     }
   } catch {
-    await loadTasks();
+    task.quadrant = prevQuadrant;
+    task.priority = prevPriority;
   }
 }
 
@@ -151,6 +164,34 @@ async function restoreFromWebdav(): Promise<SyncResult> {
   return result;
 }
 
+async function getTailscaleStatus(): Promise<TailscaleStatus> {
+  return await invoke<TailscaleStatus>("tailscale_status");
+}
+
+async function getPeerSyncStatus(): Promise<PeerSyncStatus> {
+  return await invoke<PeerSyncStatus>("peer_sync_status");
+}
+
+async function savePeerSyncConfig(secret: string, port: number) {
+  await invoke("save_peer_sync", { config: { secret, port } });
+}
+
+async function setPeerSyncListening(enabled: boolean): Promise<string> {
+  return await invoke<string>("set_peer_sync_listening", { enabled });
+}
+
+async function syncWithPeer(ip: string): Promise<SyncResult> {
+  const result = await invoke<SyncResult>("sync_with_peer", { ip });
+  await loadTasks();
+  return result;
+}
+
+async function syncAllPeers(): Promise<SyncResult> {
+  const result = await invoke<SyncResult>("sync_all_peers");
+  await loadTasks();
+  return result;
+}
+
 const sortedTasks = computed(() => {
   return [...tasks.value].sort((a, b) => {
     if (a.done !== b.done) return a.done ? 1 : -1;
@@ -162,7 +203,18 @@ function tasksByQuadrant(q: Quadrant): Task[] {
   return sortedTasks.value.filter((t) => t.quadrant === q);
 }
 
+let remoteWatchStarted = false;
+
+function watchRemoteTasks() {
+  if (remoteWatchStarted) return;
+  remoteWatchStarted = true;
+  void listen("tasks-changed", () => {
+    void loadTasks({ quiet: true }).catch(() => {});
+  });
+}
+
 export function useTasks() {
+  watchRemoteTasks();
   return {
     tasks,
     loading,
@@ -175,6 +227,7 @@ export function useTasks() {
     toggleTaskDone,
     deleteTask,
     moveTask,
+    recordQuadrantCorrection,
     getLearningStats,
     clearDone,
     getStats,
@@ -185,6 +238,12 @@ export function useTasks() {
     saveWebdav,
     syncToWebdav,
     restoreFromWebdav,
+    getTailscaleStatus,
+    getPeerSyncStatus,
+    savePeerSyncConfig,
+    setPeerSyncListening,
+    syncWithPeer,
+    syncAllPeers,
     tasksByQuadrant,
   };
 }

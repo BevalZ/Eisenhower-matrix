@@ -25,7 +25,8 @@
 | 📈 **数据统计** | 完成率、各象限分布、近 7 天完成趋势 |
 | 📤 **导入导出** | JSON 备份导出与导入恢复，跨设备迁移 |
 | ☁️ **WebDAV 同步** | 备份上传至任意 WebDAV 服务器（Nextcloud / ownCloud 等） |
-| 💾 **本地存储** | SQLite 本地持久化，数据不上云 |
+| 🔁 **Tailscale 多端同步** | 同一 tailnet 内按任务直连合并，不经过额外服务器 |
+| 💾 **本地存储** | SQLite 本地持久化，同步只发生在你自己的 Tailscale 网络 |
 | ⚡ **轻量** | Tauri 构建，安装包 < 10 MB，启动秒开 |
 
 ## 四象限方法论
@@ -57,7 +58,7 @@
 
 | 平台 | 格式 | 文件名 |
 |------|------|--------|
-| Windows | `.msi` / `.exe` | `Eisenhower-Matrix_x64_*.msi` |
+| Windows | NSIS 安装版 / 便携版 `.exe` | `Eisenhower Matrix_*_x64-setup.exe` / `*_x64_portable.exe` |
 | macOS | `.dmg` | `Eisenhower-Matrix_*.dmg` |
 | Linux | `.deb` / `.AppImage` | `eisenhower-matrix_*.deb` |
 
@@ -120,6 +121,19 @@ npm run tauri build
 
 点击「上传到 WebDAV」备份，「从 WebDAV 恢复」还原。
 
+### Tailscale 多端同步
+
+适合几台已经加入同一个 Tailscale 网络的电脑互相同步任务。连接只走 Tailscale 的 `100.64.0.0/10` 地址，不扫描局域网，也不上传到应用服务器。
+
+1. 每台设备安装并登录同一个 tailnet。
+2. 打开设置的「多端」页，填写**相同的同步密钥**和**相同的端口**（默认 `47321`）。
+3. 两台设备都点击「开始接受同步」。应用会监听本机 Tailscale 地址，并大约每 45 秒与在线设备自动对齐；也可以手动同步某一台或全部在线设备。
+4. Tailscale ACL 需要允许设备之间访问该 TCP 端口。macOS 首次监听时，系统可能会询问是否允许应用接受网络连接。
+
+合并规则是按任务的修改时间后写覆盖；时间相同则用设备 ID 打破平局。删除会保留墓碑，所以删除也能同步到其他设备。API Key 和 WebDAV 密码不会同步。
+
+如果两台设备在第一次同步前各自已经有任务，这些旧任务会各自生成 uid，可能变成重复项。可以先删掉多余任务，或者先用 JSON 导出，把其中一台的数据导入另一台，再开始同步。
+
 ## 项目结构
 
 ```
@@ -139,7 +153,8 @@ npm run tauri build
 │   │   ├── models.rs        # 数据模型与象限计算
 │   │   ├── db.rs             # SQLite 数据层
 │   │   ├── jevai.rs          # TypeSafe AI 客户端
-│   │   └── webdav.rs         # WebDAV 客户端
+│   │   ├── webdav.rs         # WebDAV 客户端
+│   │   └── sync.rs           # Tailscale 多端同步
 │   ├── Cargo.toml
 │   └── tauri.conf.json
 ├── .github/workflows/       # CI/CD 自动打包

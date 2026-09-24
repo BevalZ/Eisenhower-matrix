@@ -6,7 +6,6 @@ const props = defineProps<{ task: Task }>();
 const emit = defineEmits<{
   toggle: [id: number];
   remove: [id: number];
-  "drag-start": [task: Task];
   "pointer-down": [e: PointerEvent, task: Task];
 }>();
 
@@ -15,13 +14,13 @@ const meta = QUADRANT_META[props.task.quadrant];
 function onPointerDown(e: PointerEvent) {
   if ((e.target as HTMLElement).closest("button")) return;
   emit("pointer-down", e, props.task);
-  emit("drag-start", props.task);
 }
 </script>
 
 <template>
   <div
     class="task-card anim-popIn"
+    :data-task-id="task.id"
     :class="{ done: task.done }"
     :style="{ '--q-color': meta.color, '--q-light': meta.bg }"
     @pointerdown="onPointerDown"

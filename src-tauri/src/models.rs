@@ -42,22 +42,95 @@ pub struct Settings {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ThemeInput {
-    pub theme: String,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct WebdavConfig {
     pub url: String,
     pub username: String,
     pub password: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupTask {
+    pub id: i64,
+    pub title: String,
+    pub description: String,
+    pub quadrant: i64,
+    pub priority: f64,
+    pub importance_score: f64,
+    pub urgency_score: f64,
+    pub done: bool,
+    pub created_at: i64,
+    pub completed_at: Option<i64>,
+    #[serde(default)]
+    pub uid: String,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub updated_by: String,
+    #[serde(default)]
+    pub deleted_at: Option<i64>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BackupData {
     pub version: u32,
     pub exported_at: i64,
-    pub tasks: Vec<Task>,
+    pub tasks: Vec<BackupTask>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncTask {
+    pub uid: String,
+    pub title: String,
+    pub description: String,
+    pub quadrant: i64,
+    pub priority: f64,
+    pub importance_score: f64,
+    pub urgency_score: f64,
+    pub done: bool,
+    pub created_at: i64,
+    pub completed_at: Option<i64>,
+    pub updated_at: i64,
+    pub updated_by: String,
+    pub deleted_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SyncEnvelope {
+    pub device_id: String,
+    pub tasks: Vec<SyncTask>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TailscalePeer {
+    pub hostname: String,
+    pub ip: String,
+    pub online: bool,
+    pub os: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TailscaleStatus {
+    pub running: bool,
+    pub hostname: String,
+    pub ip: String,
+    pub peers: Vec<TailscalePeer>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PeerSyncStatus {
+    pub listening: bool,
+    pub address: String,
+    pub port: u16,
+    pub secret: String,
+    pub device_id: String,
+    pub last_error: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PeerSyncConfig {
+    pub secret: String,
+    pub port: u16,
 }
 
 #[derive(Debug, Serialize)]

@@ -2,13 +2,18 @@ mod models;
 mod db;
 mod jevai;
 mod webdav;
+mod sync;
+
+use std::sync::Arc;
 
 use models::*;
 use db::Db;
+use sync::SyncControl;
 use tauri::Manager;
 
 struct AppState {
-    db: Db,
+    db: Arc<Db>,
+    sync: Arc<SyncControl>,
 }
 
 #[tauri::command]
@@ -72,13 +77,18 @@ fn set_api_key(key: String, state: tauri::State<AppState>) -> Result<(), String>
 
 #[tauri::command]
 fn set_theme(theme: String, state: tauri::State<AppState>) -> Result<(), String> {
+    if theme != "light" && theme != "dark" {
+        return Err("主题只能是 light 或 dark".into());
+    }
     state.db.set_setting("theme", &theme)
 }
 
 #[tauri::command]
 fn save_webdav(config: WebdavConfig, state: tauri::State<AppState>) -> Result<(), String> {
-    state.db.set_setting("webdav_url", &config.url)?;
-    state.db.set_setting("webdav_username", &config.username)?;
+    let url = config.url.trim();
+    webdav::validate_url(url)?;
+    state.db.set_setting("webdav_url", url)?;
+    state.db.set_setting("webdav_username", config.username.trim())?;
     state.db.set_setting("webdav_password", &config.password)
 }
 
@@ -188,11 +198,126 @@ async fn restore_from_webdav(state: tauri::State<'_, AppState>) -> Result<SyncRe
     })
 }
 
+
+#[tauri::command]
+fn tailscale_status() -> TailscaleStatus {
+    sync::tailscale_status()
+}
+
+#[tauri::command]
+fn peer_sync_status(state: tauri::State<AppState>) -> Result<PeerSyncStatus, String> {
+    let (listening, address, last_error) = state.sync.status();
+    Ok(PeerSyncStatus {
+        listening,
+        address,
+        port: state.db.sync_port()?,
+        secret: state.db.get_setting("sync_secret")?.unwrap_or_default(),
+        device_id: state.db.device_id()?,
+        last_error,
+    })
+}
+
+#[tauri::command]
+async fn save_peer_sync(
+    config: PeerSyncConfig,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state.db.save_sync_config(&config.secret, config.port)?;
+    if state.sync.status().0 {
+        state.sync.start(Arc::clone(&state.db)).await?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_peer_sync_listening(
+    enabled: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    if enabled {
+        let addr = state.sync.start(Arc::clone(&state.db)).await?;
+        state.db.set_setting("sync_listen", "1")?;
+        Ok(addr)
+    } else {
+        state.sync.stop().await;
+        state.db.set_setting("sync_listen", "0")?;
+        Ok(String::new())
+    }
+}
+
+#[tauri::command]
+async fn sync_with_peer(
+    ip: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<SyncResult, String> {
+    let applied = sync_one(&state, &ip).await?;
+    Ok(sync_message(applied))
+}
+
+#[tauri::command]
+async fn sync_all_peers(state: tauri::State<'_, AppState>) -> Result<SyncResult, String> {
+    let status = sync::tailscale_status();
+    if !status.running {
+        return Err(if status.message.is_empty() { "Tailscale 未连接".into() } else { status.message });
+    }
+    let peers: Vec<_> = status.peers.into_iter().filter(|peer| peer.online).collect();
+    if peers.is_empty() {
+        return Err("没有其他在线的 Tailscale 设备".into());
+    }
+    let mut lines = Vec::new();
+    let mut total = 0usize;
+    let mut failures = 0usize;
+    for peer in peers {
+        match sync_one(&state, &peer.ip).await {
+            Ok(count) => {
+                total += count;
+                lines.push(format!("{}：本机更新 {} 条", peer.hostname, count));
+            }
+            Err(err) => {
+                failures += 1;
+                lines.push(format!("{}：失败（{err}）", peer.hostname));
+            }
+        }
+    }
+    Ok(SyncResult {
+        success: failures == 0,
+        message: lines.join("\n"),
+        task_count: total,
+    })
+}
+
+async fn sync_one(state: &AppState, ip: &str) -> Result<usize, String> {
+    let status = sync::tailscale_status();
+    if !status.running {
+        return Err(if status.message.is_empty() { "Tailscale 未连接".into() } else { status.message });
+    }
+    if status.ip == ip {
+        return Err("不能和本机同步".into());
+    }
+    if !status.peers.iter().any(|peer| peer.ip == ip && peer.online) {
+        return Err("这台设备不在当前 Tailscale 网络，或当前不在线".into());
+    }
+    sync::exchange(&state.db, ip, state.db.sync_port()?).await
+}
+
+fn sync_message(applied: usize) -> SyncResult {
+    SyncResult {
+        success: true,
+        message: if applied == 0 {
+            "同步完成，两边已经一致".into()
+        } else {
+            format!("同步完成，本机更新了 {applied} 条任务")
+        },
+        task_count: applied,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
-            db: Db::open().expect("failed to open database"),
+            db: Arc::new(Db::open().expect("failed to open database")),
+            sync: Arc::new(SyncControl::new()),
         })
         .invoke_handler(tauri::generate_handler![
             get_tasks,
@@ -215,12 +340,30 @@ pub fn run() {
             restore_from_webdav,
             minimize_to_ball,
             restore_from_ball,
+            tailscale_status,
+            peer_sync_status,
+            save_peer_sync,
+            set_peer_sync_listening,
+            sync_with_peer,
+            sync_all_peers,
         ])
+        .setup(|app| {
+            sync::set_app(app.handle().clone());
+            let state = app.state::<AppState>();
+            let enabled = state.db.get_setting("sync_listen").unwrap_or(None);
+            if enabled.as_deref() == Some("1") {
+                let db = Arc::clone(&state.db);
+                let sync = Arc::clone(&state.sync);
+                tauri::async_runtime::spawn(async move {
+                    let _ = sync.start(db).await;
+                });
+            }
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 if window.label() == "main" {
-                    // Quit entirely when main window closes
-                    std::process::exit(0);
+                    window.app_handle().exit(0);
                 }
             }
         })

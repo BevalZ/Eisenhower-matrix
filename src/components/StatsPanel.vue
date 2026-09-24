@@ -1,15 +1,38 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useTasks } from "../composables/useTasks";
 import { QUADRANT_META, type StatsSummary, type Quadrant } from "../types";
 
 const { getStats } = useTasks();
 const stats = ref<StatsSummary | null>(null);
 const loading = ref(true);
+const error = ref("");
+let unlisten: UnlistenFn | undefined;
+
+async function refreshStats(quiet = false) {
+  if (!quiet) loading.value = true;
+  error.value = "";
+  try {
+    stats.value = await getStats();
+  } catch (e) {
+    if (!quiet || !stats.value) {
+      error.value = e instanceof Error ? e.message : String(e);
+    }
+  } finally {
+    loading.value = false;
+  }
+}
 
 onMounted(async () => {
-  stats.value = await getStats();
-  loading.value = false;
+  unlisten = await listen("tasks-changed", () => {
+    void refreshStats(true);
+  });
+  await refreshStats();
+});
+
+onUnmounted(() => {
+  unlisten?.();
 });
 
 const quadrants: Quadrant[] = [1, 2, 3, 4];
@@ -27,6 +50,8 @@ const quadrants: Quadrant[] = [1, 2, 3, 4];
       <div v-for="i in 4" :key="i" class="skeleton" style="height: 90px; border-radius: 10px;"></div>
       <div class="skeleton" style="height: 60px; grid-column: span 4;"></div>
     </div>
+
+    <p v-else-if="error" class="stats-error">统计加载失败：{{ error }}</p>
 
     <div v-else-if="stats" class="grid">
       <!-- Overall cards -->
@@ -102,6 +127,10 @@ const quadrants: Quadrant[] = [1, 2, 3, 4];
   padding: 24px 28px;
   overflow-y: auto;
   height: 100%;
+}
+.stats-error {
+  color: var(--danger);
+  font-size: 13px;
 }
 .panel-header {
   margin-bottom: 20px;

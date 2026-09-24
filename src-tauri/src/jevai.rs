@@ -1,17 +1,8 @@
-use serde::Serialize;
 use serde_json::json;
 
 use crate::models::*;
 
 const API_URL: &str = "https://api.typesafe.ai/v1/systemone";
-
-#[derive(Serialize)]
-struct ScoreQuestion<'a> {
-    #[serde(rename = "type")]
-    qtype: &'a str,
-    instructions: &'a str,
-    criteria: Vec<&'a str>,
-}
 
 pub async fn classify(
     api_key: &str,

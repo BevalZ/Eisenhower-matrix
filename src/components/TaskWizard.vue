@@ -3,12 +3,13 @@ import { ref, nextTick, reactive } from "vue";
 import { useTasks } from "../composables/useTasks";
 import {
   QUADRANT_META,
+  scoresForQuadrant,
   type Quadrant,
   type ClassificationResult,
 } from "../types";
 
 const emit = defineEmits<{ close: [] }>();
-const { classifyTask, createTask, settings } = useTasks();
+const { classifyTask, createTask, settings, recordQuadrantCorrection } = useTasks();
 
 type Step = "title" | "content" | "importance" | "urgency" | "context" | "confirm";
 
@@ -34,6 +35,7 @@ const form = reactive({
 });
 
 const result = ref<ClassificationResult | null>(null);
+const aiClassified = ref(false);
 const manualQuadrant = ref<Quadrant>(1);
 const manualPriority = ref(50);
 
@@ -101,6 +103,7 @@ async function runClassification() {
       .join("\n");
 
     result.value = await classifyTask(description);
+    aiClassified.value = true;
     manualQuadrant.value = result.value.quadrant;
     manualPriority.value = Math.round(result.value.priority);
     pushMsg(
@@ -108,6 +111,7 @@ async function runClassification() {
       `分析完成！这个任务属于「${QUADRANT_META[result.value.quadrant].name}」，综合优先级 ${Math.round(result.value.priority)} 分。请确认或调整后保存。`
     );
   } catch (e: any) {
+    aiClassified.value = false;
     pushMsg("ai", `AI 分析失败：${e}\n你可以在下方手动选择象限后保存。`);
     result.value = {
       quadrant: 2,
@@ -124,14 +128,35 @@ async function runClassification() {
 }
 
 async function save() {
-  await createTask({
-    title: form.title,
-    description: form.content || form.whyImportant || "",
-    quadrant: manualQuadrant.value,
-    priority: manualPriority.value,
-    importance_score: result.value?.importance_score ?? 2.5,
-    urgency_score: result.value?.urgency_score ?? 2.5,
-  });
+  const priority = Number.isFinite(manualPriority.value)
+    ? Math.min(100, Math.max(0, manualPriority.value))
+    : 50;
+  const ai = result.value;
+  try {
+    await createTask({
+      title: form.title,
+      description: form.content || form.whyImportant || "",
+      quadrant: manualQuadrant.value,
+      priority,
+      importance_score: ai?.importance_score ?? 2.5,
+      urgency_score: ai?.urgency_score ?? 2.5,
+    });
+  } catch (err) {
+    pushMsg("ai", `保存失败：${err}`);
+    return;
+  }
+  if (aiClassified.value && ai && manualQuadrant.value !== ai.quadrant) {
+    const user = scoresForQuadrant(ai.importance_score, ai.urgency_score, manualQuadrant.value);
+    recordQuadrantCorrection({
+      taskTitle: form.title,
+      aiImportance: ai.importance_score,
+      aiUrgency: ai.urgency_score,
+      aiQuadrant: ai.quadrant,
+      userImportance: user.importance,
+      userUrgency: user.urgency,
+      userQuadrant: manualQuadrant.value,
+    });
+  }
   emit("close");
 }
 

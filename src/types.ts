@@ -49,6 +49,30 @@ export interface SyncResult {
   task_count: number;
 }
 
+export interface TailscalePeer {
+  hostname: string;
+  ip: string;
+  online: boolean;
+  os: string;
+}
+
+export interface TailscaleStatus {
+  running: boolean;
+  hostname: string;
+  ip: string;
+  peers: TailscalePeer[];
+  message: string;
+}
+
+export interface PeerSyncStatus {
+  listening: boolean;
+  address: string;
+  port: number;
+  secret: string;
+  device_id: string;
+  last_error: string;
+}
+
 export interface StatsSummary {
   total: number;
   done: number;
@@ -127,3 +151,34 @@ export const URGENCY_LABELS = [
   "紧迫截止，24-48 小时内",
   "必须立刻，已经逾期",
 ];
+
+const SCORE_THRESHOLD = 2.5;
+
+export function quadrantFromScores(importance: number, urgency: number): Quadrant {
+  const important = importance >= SCORE_THRESHOLD;
+  const urgent = urgency >= SCORE_THRESHOLD;
+  if (important && urgent) return 1;
+  if (important) return 2;
+  if (urgent) return 3;
+  return 4;
+}
+
+/** Nudge scores across the 2.5 threshold without discarding the original magnitude. */
+export function scoresForQuadrant(
+  importance: number,
+  urgency: number,
+  quadrant: Quadrant,
+): { importance: number; urgency: number } {
+  let nextImportance = importance;
+  let nextUrgency = urgency;
+  const wantImportant = quadrant <= 2;
+  const wantUrgent = quadrant === 1 || quadrant === 3;
+  if (wantImportant && nextImportance < SCORE_THRESHOLD) nextImportance = SCORE_THRESHOLD;
+  if (!wantImportant && nextImportance >= SCORE_THRESHOLD) nextImportance = SCORE_THRESHOLD - 0.01;
+  if (wantUrgent && nextUrgency < SCORE_THRESHOLD) nextUrgency = SCORE_THRESHOLD;
+  if (!wantUrgent && nextUrgency >= SCORE_THRESHOLD) nextUrgency = SCORE_THRESHOLD - 0.01;
+  return {
+    importance: Math.min(4, Math.max(0, nextImportance)),
+    urgency: Math.min(4, Math.max(0, nextUrgency)),
+  };
+}
