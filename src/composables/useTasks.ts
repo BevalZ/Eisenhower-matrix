@@ -2,10 +2,11 @@ import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
+  isUnscored,
   quadrantFromScores,
   scoresForQuadrant,
-  type Task, type TaskInput, type ClassificationResult, type StatsSummary, type Settings,
-  type Quadrant, type WebdavConfig, type SyncResult, type LearningStats,
+  type Task, type TaskInput, type TaskUpdate, type ClassificationResult, type StatsSummary, type Settings,
+  type Quadrant, type WebdavConfig, type WebdavInfo, type SyncResult, type LearningStats,
   type TailscaleStatus, type PeerSyncStatus,
 } from "../types";
 import { compareTasks, type TaskMove } from "../ordering";
@@ -131,21 +132,37 @@ async function reorderTasks(moves: TaskMove[]) {
     toast.showError("移动失败，已恢复原位置", err);
     return;
   }
-  // AI learning: a first move out of the AI-chosen quadrant counts as a correction.
-  for (const { task, move, prevQuadrant } of changes) {
-    if (move.quadrant === prevQuadrant) continue;
-    if (quadrantFromScores(task.importance_score, task.urgency_score) !== prevQuadrant) continue;
-    const user = scoresForQuadrant(task.importance_score, task.urgency_score, move.quadrant);
-    recordQuadrantCorrection({
-      taskTitle: task.title,
-      aiImportance: task.importance_score,
-      aiUrgency: task.urgency_score,
-      aiQuadrant: prevQuadrant,
-      userImportance: user.importance,
-      userUrgency: user.urgency,
-      userQuadrant: move.quadrant,
-    });
+  for (const { task, move, prevQuadrant } of changes) learnFromMove(task, prevQuadrant, move.quadrant);
+}
+
+/** AI learning: a first move out of the AI-chosen quadrant counts as a correction. */
+function learnFromMove(task: Task, from: Quadrant, to: Quadrant) {
+  if (from === to || isUnscored(task)) return;
+  if (quadrantFromScores(task.importance_score, task.urgency_score) !== from) return;
+  const user = scoresForQuadrant(task.importance_score, task.urgency_score, to);
+  recordQuadrantCorrection({
+    taskTitle: task.title,
+    aiImportance: task.importance_score,
+    aiUrgency: task.urgency_score,
+    aiQuadrant: from,
+    userImportance: user.importance,
+    userUrgency: user.urgency,
+    userQuadrant: to,
+  });
+}
+
+async function updateTask(input: TaskUpdate) {
+  const task = tasks.value.find((t) => t.id === input.id);
+  if (!task) return;
+  const prev = { title: task.title, description: task.description, quadrant: task.quadrant, priority: task.priority };
+  Object.assign(task, { ...input, title: input.title.trim() });
+  try {
+    await invoke("update_task", { input });
+  } catch (err) {
+    Object.assign(task, prev);
+    throw err;
   }
+  learnFromMove(task, prev.quadrant, input.quadrant);
 }
 
 // Remote sync refreshes are deferred while a card is being dragged,
@@ -200,6 +217,12 @@ async function setTheme(theme: string) {
 
 function applyTheme(theme: string) {
   document.documentElement.setAttribute("data-theme", theme);
+  // main.ts reads this before mounting, so dark-theme users don't see a light flash on start.
+  try {
+    localStorage.setItem("theme", theme);
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 async function exportData(): Promise<string> {
@@ -215,6 +238,10 @@ async function importData(json: string): Promise<number> {
 async function saveWebdav(config: WebdavConfig) {
   await invoke("save_webdav", { config });
   await loadSettings();
+}
+
+async function getWebdavConfig(): Promise<WebdavInfo> {
+  return await invoke<WebdavInfo>("get_webdav_config");
 }
 
 async function syncToWebdav(): Promise<SyncResult> {
@@ -286,6 +313,7 @@ export function useTasks() {
     saveApiKey,
     classifyTask,
     createTask,
+    updateTask,
     toggleTaskDone,
     deleteTask,
     restoreTasks,
@@ -300,6 +328,7 @@ export function useTasks() {
     exportData,
     importData,
     saveWebdav,
+    getWebdavConfig,
     syncToWebdav,
     restoreFromWebdav,
     getTailscaleStatus,

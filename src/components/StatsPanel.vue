@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onUnmounted, computed } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useTasks } from "../composables/useTasks";
 import { QUADRANT_META, type StatsSummary, type Quadrant } from "../types";
@@ -36,6 +36,8 @@ onUnmounted(() => {
 });
 
 const quadrants: Quadrant[] = [1, 2, 3, 4];
+// Bars scale to the busiest day instead of capping at 4 tasks.
+const trendMax = computed(() => Math.max(1, ...(stats.value?.recent_completed.map((d) => d.count) ?? [])));
 </script>
 
 <template>
@@ -111,7 +113,7 @@ const quadrants: Quadrant[] = [1, 2, 3, 4];
             <div class="trend-bar">
               <div
                 class="trend-fill"
-                :style="{ height: Math.min(100, d.count * 25) + '%' }"
+                :style="{ height: (d.count / trendMax) * 100 + '%' }"
               ></div>
             </div>
             <span class="trend-date">{{ d.date }}</span>

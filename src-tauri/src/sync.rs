@@ -264,7 +264,17 @@ fn tailscale_bins() -> Vec<String> {
 fn tailscale_status_json() -> Result<String, String> {
     let mut last_error = "未找到 Tailscale".to_string();
     for bin in tailscale_bins() {
-        match Command::new(&bin).args(["status", "--json"]).output() {
+        let mut cmd = Command::new(&bin);
+        cmd.args(["status", "--json"]);
+        // A GUI app that spawns a console program gets a console window unless told otherwise;
+        // with auto-sync every 45 s that window would flash repeatedly.
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        match cmd.output() {
             Ok(output) if output.status.success() => {
                 return String::from_utf8(output.stdout)
                     .map_err(|_| "Tailscale 输出不是 UTF-8".to_string());

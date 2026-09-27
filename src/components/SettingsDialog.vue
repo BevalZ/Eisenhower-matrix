@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, reactive } from "vue";
+import { ref, onMounted, reactive, computed } from "vue";
 import { useTasks } from "../composables/useTasks";
 import type { PeerSyncStatus, TailscaleStatus, WebdavConfig } from "../types";
 
@@ -7,7 +7,7 @@ const emit = defineEmits<{ close: [] }>();
 const {
   settings, saveApiKey, loadSettings, loadTasks,
   setTheme, exportData, importData,
-  saveWebdav, syncToWebdav, restoreFromWebdav,
+  saveWebdav, getWebdavConfig, syncToWebdav, restoreFromWebdav,
   getTailscaleStatus, getPeerSyncStatus, savePeerSyncConfig,
   setPeerSyncListening, syncWithPeer, syncAllPeers,
 } = useTasks();
@@ -21,6 +21,7 @@ const saved = ref(false);
 const theme = ref("light");
 
 const webdav = reactive<WebdavConfig>({ url: "", username: "", password: "" });
+const webdavHasPassword = ref(false);
 const webdavSaved = ref(false);
 const syncMsg = ref("");
 const dataMsg = ref("");
@@ -36,6 +37,24 @@ const peerBusy = ref(false);
 onMounted(async () => {
   await loadSettings();
   theme.value = settings.value.theme || "light";
+  try {
+    const saved = await getWebdavConfig();
+    webdav.url = saved.url;
+    webdav.username = saved.username;
+    webdavHasPassword.value = saved.has_password;
+  } catch {
+    /* form stays empty */
+  }
+});
+
+// Basic Auth over plain http sends the password readable to anyone on the path.
+const webdavInsecure = computed(() => {
+  try {
+    const u = new URL(webdav.url.trim());
+    return u.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+  } catch {
+    return false;
+  }
 });
 
 async function saveKey() {
@@ -83,7 +102,14 @@ async function doImport(e: Event) {
 
 async function saveWd() {
   if (!webdav.url.trim()) return;
-  await saveWebdav({ ...webdav });
+  try {
+    await saveWebdav({ ...webdav });
+  } catch (err: any) {
+    syncMsg.value = `保存失败: ${err}`;
+    return;
+  }
+  if (webdav.password) webdavHasPassword.value = true;
+  webdav.password = "";
   webdavSaved.value = true;
   setTimeout(() => (webdavSaved.value = false), 2000);
 }
@@ -213,7 +239,7 @@ async function doRestore() {
           <h3>管理设置</h3>
           <p class="head-sub">主题、数据与同步</p>
         </div>
-        <button class="close-btn" @click="emit('close')">
+        <button class="close-btn" aria-label="关闭" @click="emit('close')">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
             <path d="M3 3l8 8M11 3l-8 8"/>
           </svg>
@@ -276,9 +302,15 @@ async function doRestore() {
         <div v-else-if="activeTab === 'sync'" class="pane">
           <div class="section">
             <label class="section-label">WebDAV 服务器配置</label>
-            <input v-model="webdav.url" type="text" placeholder="https://dav.example.com/eisenhower/backup.json" />
-            <input v-model="webdav.username" type="text" placeholder="用户名" />
-            <input v-model="webdav.password" type="password" placeholder="密码" />
+            <input v-model="webdav.url" type="text" placeholder="https://dav.example.com/eisenhower/backup.json" aria-label="WebDAV 地址" />
+            <input v-model="webdav.username" type="text" placeholder="用户名" aria-label="用户名" />
+            <input
+              v-model="webdav.password"
+              type="password"
+              :placeholder="webdavHasPassword ? '已保存密码（留空则不修改）' : '密码'"
+              aria-label="密码"
+            />
+            <p v-if="webdavInsecure" class="hint warn-text">⚠ 这是 http 地址，密码会以明文传输。建议改用 https。</p>
             <div class="status" :class="settings.webdav_configured ? 'ok' : 'warn'">
               <span class="dot"></span>{{ settings.webdav_configured ? "WebDAV 已配置" : "未配置 WebDAV" }}
             </div>
@@ -461,6 +493,7 @@ h3 { font-size: 16px; font-weight: 700; }
 .hint { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 .hint a { color: var(--primary); text-decoration: none; }
 .hint a:hover { text-decoration: underline; }
+.hint.warn-text { color: var(--warning); }
 .status {
   display: flex;
   align-items: center;

@@ -223,6 +223,7 @@ select {
 /* ===== Inputs ===== */
 input[type="text"],
 input[type="password"],
+input[type="number"],
 textarea,
 select {
   width: 100%;
@@ -234,6 +235,7 @@ select {
 }
 input[type="text"]:focus,
 input[type="password"]:focus,
+input[type="number"]:focus,
 textarea:focus,
 select:focus {
   border-color: var(--primary);

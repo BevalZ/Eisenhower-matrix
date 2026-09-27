@@ -24,6 +24,16 @@ pub struct TaskInput {
     pub urgency_score: f64,
 }
 
+/// Fields editable after creation.
+#[derive(Debug, Deserialize)]
+pub struct TaskUpdate {
+    pub id: i64,
+    pub title: String,
+    pub description: String,
+    pub quadrant: i64,
+    pub priority: f64,
+}
+
 /// One row of a drag-and-drop reorder: the task's new quadrant and priority.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TaskMove {
@@ -54,6 +64,14 @@ pub struct WebdavConfig {
     pub url: String,
     pub username: String,
     pub password: String,
+}
+
+/// Saved WebDAV settings for the form; the password itself never leaves the backend.
+#[derive(Debug, Serialize)]
+pub struct WebdavInfo {
+    pub url: String,
+    pub username: String,
+    pub has_password: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

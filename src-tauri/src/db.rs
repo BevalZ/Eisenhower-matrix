@@ -240,6 +240,7 @@ impl Db {
         if title.is_empty() {
             return Err("任务标题不能为空".into());
         }
+        validate_text(title, &input.description)?;
         validate_quadrant(input.quadrant)?;
         validate_priority(input.priority)?;
         validate_unit_score("重要性", input.importance_score)?;
@@ -280,6 +281,32 @@ impl Db {
             created_at: now,
             completed_at: None,
         })
+    }
+
+    pub fn update_task(&self, input: &TaskUpdate) -> Result<(), String> {
+        let title = input.title.trim();
+        if title.is_empty() {
+            return Err("任务标题不能为空".into());
+        }
+        validate_text(title, &input.description)?;
+        validate_quadrant(input.quadrant)?;
+        validate_priority(input.priority)?;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = Utc::now().timestamp_millis();
+        let device = device_id_locked(&conn)?;
+        let changed = conn
+            .execute(
+                "UPDATE tasks
+                 SET title = ?1, description = ?2, quadrant = ?3, priority = ?4,
+                     updated_at = max(updated_at + 1, ?5), updated_by = ?6
+                 WHERE id = ?7 AND deleted_at IS NULL",
+                params![title, input.description, input.quadrant, input.priority, now, device, input.id],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err("任务不存在或已被删除".into());
+        }
+        Ok(())
     }
 
     pub fn toggle_done(&self, id: i64) -> Result<(), String> {
@@ -903,6 +930,14 @@ fn calibration_bias(conn: &Connection) -> Result<(f64, f64), String> {
     Ok((avg.0 * weight, avg.1 * weight))
 }
 
+/// Same limits as validate_sync_task, so a local task can never be rejected by a peer.
+fn validate_text(title: &str, description: &str) -> Result<(), String> {
+    if title.chars().count() > 2000 || description.chars().count() > 20_000 {
+        return Err("任务标题或描述过长".into());
+    }
+    Ok(())
+}
+
 fn validate_quadrant(quadrant: i64) -> Result<(), String> {
     if (1..=4).contains(&quadrant) {
         Ok(())
@@ -984,6 +1019,29 @@ mod tests {
         assert!(db.reorder_tasks(&[mv(a.id, 1, 100.5)]).is_err());
         assert!(db.reorder_tasks(&[mv(a.id, 1, f64::NAN)]).is_err());
         assert!(db.reorder_tasks(&[]).is_ok());
+    }
+
+    #[test]
+    fn update_task_edits_fields_and_validates() {
+        let db = Db::open_in_memory().unwrap();
+        let t = db.create_task(&input("old", 1, 50.0)).unwrap();
+        let edit = |title: &str, quadrant: i64| TaskUpdate {
+            id: t.id,
+            title: title.into(),
+            description: "desc".into(),
+            quadrant,
+            priority: 42.0,
+        };
+        db.update_task(&edit("  new  ", 3)).unwrap();
+        let got = find(&db, t.id);
+        assert_eq!((got.title.as_str(), got.quadrant, got.priority), ("new", 3, 42.0));
+        assert_eq!(got.description, "desc");
+
+        assert!(db.update_task(&edit("   ", 3)).is_err());
+        assert!(db.update_task(&edit("x", 0)).is_err());
+        assert!(db.update_task(&edit(&"长".repeat(2001), 3)).is_err());
+        db.delete_task(t.id).unwrap();
+        assert!(db.update_task(&edit("gone", 3)).is_err());
     }
 
     #[test]

@@ -37,6 +37,11 @@ fn delete_task(id: i64, state: tauri::State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn update_task(input: TaskUpdate, state: tauri::State<AppState>) -> Result<(), String> {
+    state.db.update_task(&input)
+}
+
+#[tauri::command]
 fn reorder_tasks(moves: Vec<TaskMove>, state: tauri::State<AppState>) -> Result<(), String> {
     state.db.reorder_tasks(&moves)
 }
@@ -89,7 +94,23 @@ fn save_webdav(config: WebdavConfig, state: tauri::State<AppState>) -> Result<()
     webdav::validate_url(url)?;
     state.db.set_setting("webdav_url", url)?;
     state.db.set_setting("webdav_username", config.username.trim())?;
+    // An empty password field means "keep the saved one", so re-saving the URL does not wipe it.
+    if config.password.is_empty() {
+        return Ok(());
+    }
     state.db.set_setting("webdav_password", &config.password)
+}
+
+#[tauri::command]
+fn get_webdav_config(state: tauri::State<AppState>) -> Result<WebdavInfo, String> {
+    Ok(WebdavInfo {
+        url: state.db.get_setting("webdav_url")?.unwrap_or_default(),
+        username: state.db.get_setting("webdav_username")?.unwrap_or_default(),
+        has_password: state
+            .db
+            .get_setting("webdav_password")?
+            .is_some_and(|p| !p.is_empty()),
+    })
 }
 
 // ---- AI ----
@@ -324,6 +345,7 @@ pub fn run() {
             create_task,
             toggle_task_done,
             delete_task,
+            update_task,
             reorder_tasks,
             clear_done_tasks,
             restore_tasks,
@@ -332,6 +354,7 @@ pub fn run() {
             set_api_key,
             set_theme,
             save_webdav,
+            get_webdav_config,
             classify_task,
             record_feedback,
             get_learning_stats,

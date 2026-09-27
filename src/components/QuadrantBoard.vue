@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
 import TaskCard from "./TaskCard.vue";
+import TaskEditDialog from "./TaskEditDialog.vue";
 import type { Task, Quadrant } from "../types";
-import { QUADRANT_META } from "../types";
+import { DEFAULT_PRIORITY, QUADRANT_META, UNSCORED } from "../types";
 import { useTasks } from "../composables/useTasks";
+import { useToast } from "../composables/useToast";
 import { useBoardDrag } from "../composables/useBoardDrag";
 import { clampIndex, naturalIndex, planDrop, type TaskMove } from "../ordering";
 
-const { toggleTaskDone, deleteTask, reorderTasks, holdRemoteRefresh, tasksByQuadrant } = useTasks();
+const { toggleTaskDone, deleteTask, reorderTasks, holdRemoteRefresh, tasksByQuadrant, createTask } = useTasks();
+const { showError } = useToast();
 
 const quadrants: Quadrant[] = [1, 2, 3, 4];
 const layout: Record<Quadrant, { row: number; col: number }> = {
@@ -43,6 +46,52 @@ const rows = computed(() => {
 // ---- Keyboard moves (1-4 = quadrant, Alt+↑/↓ = order) ----
 
 const liveMessage = ref("");
+const editing = ref<Task | null>(null);
+
+// ---- Quick add: title only, no AI ----
+
+const adding = ref<Quadrant | null>(null);
+const addTitle = ref("");
+const addBusy = ref(false);
+
+function openQuickAdd(q: Quadrant) {
+  adding.value = adding.value === q ? null : q;
+  addTitle.value = "";
+}
+
+async function submitQuickAdd(q: Quadrant) {
+  const title = addTitle.value.trim();
+  if (!title || addBusy.value) return;
+  addBusy.value = true;
+  try {
+    const task = await createTask({
+      title,
+      description: "",
+      quadrant: q,
+      priority: DEFAULT_PRIORITY[q],
+      importance_score: UNSCORED,
+      urgency_score: UNSCORED,
+    });
+    addTitle.value = "";
+    liveMessage.value = `已添加「${title}」到${QUADRANT_META[q].name}`;
+    await nextTick();
+    document.querySelector(`[data-task-id="${task.id}"]`)?.scrollIntoView({ block: "nearest" });
+  } catch (err) {
+    showError("添加失败", err);
+  } finally {
+    addBusy.value = false;
+  }
+}
+
+/** Focus once when mounted (a function ref would re-focus on every render). */
+const vFocus = { mounted: (el: HTMLElement) => el.focus() };
+
+function closeEditor() {
+  const id = editing.value?.id;
+  editing.value = null;
+  // Return focus to the card that was edited.
+  void nextTick(() => document.querySelector<HTMLElement>(`[data-task-id="${id}"]`)?.focus());
+}
 
 function applyKeyboardMoves(task: Task, moves: TaskMove[], message: string) {
   if (!moves.length) return;
@@ -98,8 +147,30 @@ function nudge(task: Task, delta: -1 | 1) {
             </div>
             <kbd class="q-key" :title="`选中卡片后按 ${q} 移到这里`">{{ q }}</kbd>
             <span class="q-count">{{ tasksByQuadrant(q).length }}</span>
+            <button
+              class="q-add"
+              :class="{ active: adding === q }"
+              :aria-label="`快速添加到${QUADRANT_META[q].name}`"
+              :aria-expanded="adding === q"
+              title="快速添加（不经过 AI）"
+              @click="openQuickAdd(q)"
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 2v8M2 6h8"/></svg>
+            </button>
           </div>
           <div :ref="(el) => setBody(q, el)" class="q-body">
+            <form v-if="adding === q" class="quick-add" @submit.prevent="submitQuickAdd(q)">
+              <input
+                v-focus
+                v-model="addTitle"
+                type="text"
+                maxlength="2000"
+                placeholder="输入标题，回车添加，Esc 关闭"
+                :aria-label="`新任务标题（${QUADRANT_META[q].name}）`"
+                :disabled="addBusy"
+                @keydown.esc.stop.prevent="adding = null"
+              />
+            </form>
             <TransitionGroup tag="div" name="card" :css="false" class="q-list" role="list">
               <template v-for="row in rows[q]" :key="row.key">
                 <div
@@ -116,10 +187,11 @@ function nudge(task: Task, delta: -1 | 1) {
                   @pointer-down="onPointerDown"
                   @move-to="moveToQuadrant"
                   @nudge="nudge"
+                  @edit="editing = $event"
                 />
               </template>
             </TransitionGroup>
-            <div v-if="!rows[q].length" class="empty">
+            <div v-if="!rows[q].length && adding !== q" class="empty">
               <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.2">
                 <rect x="4" y="4" width="20" height="20" rx="3" stroke-dasharray="3 3"/>
                 <path d="M14 10v8M10 14h8" stroke-linecap="round"/>
@@ -145,8 +217,10 @@ function nudge(task: Task, delta: -1 | 1) {
       </div>
     </Teleport>
 
+    <TaskEditDialog v-if="editing" :task="editing" @close="closeEditor" />
+
     <p id="board-keyboard-help" class="sr-only">
-      按数字键 1 到 4 移到对应象限，Alt 加上下方向键调整顺序，空格切换完成，Delete 删除。
+      按数字键 1 到 4 移到对应象限，Alt 加上下方向键调整顺序，Enter 编辑，空格切换完成，Delete 删除。
     </p>
     <div class="sr-only" aria-live="polite">{{ liveMessage }}</div>
   </div>
@@ -234,6 +308,23 @@ function nudge(task: Task, delta: -1 | 1) {
   transition: opacity var(--dur-fast) var(--ease);
 }
 .board:focus-within .q-key { opacity: 1; }
+.q-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+}
+.q-add:hover,
+.q-add.active {
+  background: var(--q-light);
+  color: var(--q-color);
+}
+.q-add:focus-visible { outline: 2px solid var(--q-color); outline-offset: 1px; }
+.quick-add { margin-bottom: 8px; }
+.quick-add input { padding: 7px 10px; font-size: 13px; }
 .q-count {
   font-size: 11px;
   font-weight: 600;

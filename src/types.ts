@@ -22,6 +22,14 @@ export interface TaskInput {
   urgency_score: number;
 }
 
+export interface TaskUpdate {
+  id: number;
+  title: string;
+  description: string;
+  quadrant: Quadrant;
+  priority: number;
+}
+
 export interface ClassificationResult {
   quadrant: Quadrant;
   priority: number;
@@ -41,6 +49,12 @@ export interface WebdavConfig {
   url: string;
   username: string;
   password: string;
+}
+
+export interface WebdavInfo {
+  url: string;
+  username: string;
+  has_password: boolean;
 }
 
 export interface SyncResult {
@@ -137,23 +151,20 @@ export const QUADRANT_META: Record<
   },
 };
 
-export const IMPORTANCE_LABELS = [
-  "无关紧要，没有实际影响",
-  "影响较小，锦上添花",
-  "中等影响，支撑部分目标",
-  "重大影响，直接支撑关键目标",
-  "至关重要，决定长期成功",
-];
-
-export const URGENCY_LABELS = [
-  "没有截止时间，随时可做",
-  "宽松截止，可等待数周",
-  "合理截止，近几天内",
-  "紧迫截止，24-48 小时内",
-  "必须立刻，已经逾期",
-];
-
 const SCORE_THRESHOLD = 2.5;
+
+/**
+ * Scores given to tasks the AI never rated (quick add, AI unavailable).
+ * Moving such a task must not be learned as a correction of the AI.
+ */
+export const UNSCORED = 2.5;
+
+export function isUnscored(t: { importance_score: number; urgency_score: number }): boolean {
+  return t.importance_score === UNSCORED && t.urgency_score === UNSCORED;
+}
+
+/** Starting priority for tasks added without AI. */
+export const DEFAULT_PRIORITY: Record<Quadrant, number> = { 1: 70, 2: 60, 3: 40, 4: 20 };
 
 export function quadrantFromScores(importance: number, urgency: number): Quadrant {
   const important = importance >= SCORE_THRESHOLD;

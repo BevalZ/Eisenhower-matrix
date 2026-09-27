@@ -10,7 +10,12 @@ const emit = defineEmits<{
   "pointer-down": [e: PointerEvent, task: Task];
   "move-to": [task: Task, quadrant: Quadrant];
   nudge: [task: Task, delta: -1 | 1];
+  edit: [task: Task];
 }>();
+
+function onDblClick(e: MouseEvent) {
+  if (!(e.target as HTMLElement).closest("button")) emit("edit", props.task);
+}
 
 const meta = computed(() => QUADRANT_META[props.task.quadrant]);
 
@@ -38,6 +43,9 @@ function onKeyDown(e: KeyboardEvent) {
   } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
     e.preventDefault();
     emit("nudge", props.task, e.key === "ArrowUp" ? -1 : 1);
+  } else if (!e.altKey && e.key === "Enter") {
+    e.preventDefault();
+    emit("edit", props.task);
   } else if (!e.altKey && e.key === " ") {
     e.preventDefault();
     emit("toggle", props.task.id);
@@ -81,6 +89,7 @@ function onKeyDown(e: KeyboardEvent) {
     aria-describedby="board-keyboard-help"
     @pointerdown="onPointerDown"
     @keydown="onKeyDown"
+    @dblclick="onDblClick"
     @animationend="onAnimationEnd"
   >
     <div class="accent"></div>
@@ -98,6 +107,11 @@ function onKeyDown(e: KeyboardEvent) {
           </svg>
         </button>
         <span class="title" :title="task.title">{{ task.title }}</span>
+        <button class="del edit" aria-label="编辑任务" title="编辑（Enter / 双击）" @click="emit('edit', task)">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round">
+            <path d="M8.2 1.8l2 2L4 10H2V8z"/>
+          </svg>
+        </button>
         <button class="del" aria-label="删除任务" @click="emit('remove', task.id)">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
             <path d="M3 3l6 6M9 3l-6 6"/>
@@ -203,6 +217,7 @@ function onKeyDown(e: KeyboardEvent) {
 .task-card:hover .del,
 .task-card:focus-within .del { opacity: 1; }
 .del:hover { background: var(--danger-light); color: var(--danger); }
+.del.edit:hover { background: var(--primary-light); color: var(--primary); }
 .desc {
   font-size: 12px; color: var(--text-secondary);
   margin: 6px 0 0 26px; line-height: 1.5;
