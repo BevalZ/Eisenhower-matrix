@@ -5,7 +5,8 @@ import {
   isUnscored,
   quadrantFromScores,
   scoresForQuadrant,
-  type Task, type TaskInput, type TaskUpdate, type ClassificationResult, type StatsSummary, type Settings,
+  type AiConfig, type Task, type TaskInput, type TaskUpdate,
+ type ClassificationResult, type StatsSummary, type Settings,
   type Quadrant, type WebdavConfig, type WebdavInfo, type SyncResult, type LearningStats,
   type TailscaleStatus, type PeerSyncStatus,
 } from "../types";
@@ -44,6 +45,11 @@ async function loadSettings() {
 
 async function saveApiKey(key: string) {
   await invoke("set_api_key", { key });
+  await loadSettings();
+}
+
+async function saveAiConfig(config: AiConfig) {
+  await invoke("save_ai_config", { config });
   await loadSettings();
 }
 
@@ -316,6 +322,7 @@ export function useTasks() {
     loadTasks,
     loadSettings,
     saveApiKey,
+    saveAiConfig,
     classifyTask,
     createTask,
     updateTask,

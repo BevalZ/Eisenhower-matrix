@@ -11,6 +11,8 @@ use crate::db::Db;
 const SERVICE: &str = "com.eisenhower.app";
 pub const API_KEY: &str = "api_key";
 pub const WEBDAV_PASSWORD: &str = "webdav_password";
+pub const OPENAI_API_KEY: &str = "openai_api_key";
+
 
 fn entry(name: &str) -> keyring::Result<keyring::Entry> {
     keyring::Entry::new(SERVICE, name)

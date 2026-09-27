@@ -74,24 +74,24 @@ pub async fn classify(
     }
 
     let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let (raw_importance, raw_urgency) = parse_scores(&v)?;
+    let (importance, urgency) = parse_scores(&v)?;
+    Ok(classification(importance, urgency, imp_bias, urg_bias))
+}
 
-    // Apply user-calibrated bias from accumulated feedback
-    let importance_score = (raw_importance + imp_bias).clamp(0.0, 4.0);
-    let urgency_score = (raw_urgency + urg_bias).clamp(0.0, 4.0);
-
-    let quadrant = scores_to_quadrant(importance_score, urgency_score);
-    let priority = compute_priority(importance_score, urgency_score);
-
-    Ok(ClassificationResult {
-        quadrant,
-        priority,
+/// Shared by every provider: apply the learned bias, then map scores to a quadrant.
+pub fn classification(importance: f64, urgency: f64, imp_bias: f64, urg_bias: f64) -> ClassificationResult {
+    let importance_score = (importance + imp_bias).clamp(0.0, 4.0);
+    let urgency_score = (urgency + urg_bias).clamp(0.0, 4.0);
+    ClassificationResult {
+        quadrant: scores_to_quadrant(importance_score, urgency_score),
+        priority: compute_priority(importance_score, urgency_score),
         importance_score,
         urgency_score,
         importance_label: label_for(importance_score, &IMPORTANCE_LABELS),
         urgency_label: label_for(urgency_score, &URGENCY_LABELS),
-    })
+    }
 }
+
 
 /// Read both scores from the API answer. A missing score is an error: falling back to a
 /// default would silently file every task into the same quadrant if the API format changes.

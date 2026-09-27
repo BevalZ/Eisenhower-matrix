@@ -61,10 +61,28 @@ pub struct ClassificationResult {
 
 #[derive(Debug, Serialize)]
 pub struct Settings {
+    /// The selected AI provider is usable (kept under this name for the wizard).
     pub api_key_configured: bool,
     pub theme: String,
     pub webdav_configured: bool,
+    /// "jevai" or "openai" (any OpenAI-compatible endpoint, including Ollama).
+    pub ai_provider: String,
+    pub ai_base_url: String,
+    pub ai_model: String,
+    pub jevai_key_configured: bool,
+    pub openai_key_configured: bool,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct AiConfig {
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    /// Empty = keep the saved key.
+    #[serde(default)]
+    pub api_key: String,
+}
+
 
 #[derive(Debug, Deserialize)]
 pub struct WebdavConfig {

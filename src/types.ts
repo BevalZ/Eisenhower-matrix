@@ -47,7 +47,20 @@ export interface Settings {
   api_key_configured: boolean;
   theme: string;
   webdav_configured: boolean;
+  ai_provider?: "jevai" | "openai";
+  ai_base_url?: string;
+  ai_model?: string;
+  jevai_key_configured?: boolean;
+  openai_key_configured?: boolean;
 }
+
+export interface AiConfig {
+  provider: "jevai" | "openai";
+  base_url: string;
+  model: string;
+  api_key: string;
+}
+
 
 export interface WebdavConfig {
   url: string;

@@ -1,7 +1,9 @@
 mod models;
 mod db;
 mod jevai;
+mod openai;
 mod secrets;
+
 mod webdav;
 mod sync;
 
@@ -68,12 +70,54 @@ fn get_stats(state: tauri::State<AppState>) -> Result<StatsSummary, String> {
 fn get_settings(state: tauri::State<AppState>) -> Result<Settings, String> {
     let theme = state.db.get_setting("theme")?.unwrap_or_else(|| "light".into());
     let webdav_url = state.db.get_setting("webdav_url")?;
+    let ai = ai_settings(&state.db)?;
+    let jevai_key = secrets::is_set(&state.db, secrets::API_KEY)?;
+    let openai_key = secrets::is_set(&state.db, secrets::OPENAI_API_KEY)?;
     Ok(Settings {
-        api_key_configured: secrets::is_set(&state.db, secrets::API_KEY)?,
+        api_key_configured: if ai.0 == "openai" { !ai.1.is_empty() && !ai.2.is_empty() } else { jevai_key },
         theme,
         webdav_configured: webdav_url.is_some(),
+        ai_provider: ai.0,
+        ai_base_url: ai.1,
+        ai_model: ai.2,
+        jevai_key_configured: jevai_key,
+        openai_key_configured: openai_key,
     })
 }
+
+/// (provider, base_url, model)
+fn ai_settings(db: &Db) -> Result<(String, String, String), String> {
+    Ok((
+        db.get_setting("ai_provider")?.unwrap_or_else(|| "jevai".into()),
+        db.get_setting("ai_base_url")?.unwrap_or_default(),
+        db.get_setting("ai_model")?.unwrap_or_default(),
+    ))
+}
+
+#[tauri::command]
+fn save_ai_config(config: AiConfig, state: tauri::State<AppState>) -> Result<(), String> {
+    match config.provider.as_str() {
+        "jevai" => {}
+        "openai" => {
+            let url = config.base_url.trim();
+            let parsed = reqwest::Url::parse(url).map_err(|_| "接口地址无效".to_string())?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                return Err("接口地址需要以 http:// 或 https:// 开头".into());
+            }
+            if config.model.trim().is_empty() {
+                return Err("请填写模型名称".into());
+            }
+            state.db.set_setting("ai_base_url", url)?;
+            state.db.set_setting("ai_model", config.model.trim())?;
+            if !config.api_key.trim().is_empty() {
+                secrets::set(&state.db, secrets::OPENAI_API_KEY, config.api_key.trim())?;
+            }
+        }
+        _ => return Err("未知的 AI 服务".into()),
+    }
+    state.db.set_setting("ai_provider", &config.provider)
+}
+
 
 #[tauri::command]
 fn set_api_key(key: String, state: tauri::State<AppState>) -> Result<(), String> {
@@ -121,11 +165,20 @@ async fn classify_task(
     description: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<ClassificationResult, String> {
+    let (imp_bias, urg_bias) = state.db.get_calibration_bias()?;
+    let (provider, base_url, model) = ai_settings(&state.db)?;
+    if provider == "openai" {
+        if base_url.is_empty() || model.is_empty() {
+            return Err("请先在设置中填写 OpenAI 兼容接口地址和模型".into());
+        }
+        let key = secrets::get(&state.db, secrets::OPENAI_API_KEY)?;
+        return openai::classify(&base_url, key.as_deref(), &model, &description, imp_bias, urg_bias).await;
+    }
     let api_key = secrets::get(&state.db, secrets::API_KEY)?.ok_or(
         "尚未配置 API Key，请先在设置中填入 TypeSafe AI API Key",
     )?;
-    let (imp_bias, urg_bias) = state.db.get_calibration_bias()?;
     jevai::classify(&api_key, &description, imp_bias, urg_bias).await
+
 }
 
 #[tauri::command]
@@ -379,6 +432,7 @@ pub fn run() {
             get_stats,
             get_settings,
             set_api_key,
+            save_ai_config,
             set_theme,
             save_webdav,
             get_webdav_config,

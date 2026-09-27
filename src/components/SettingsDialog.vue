@@ -5,7 +5,7 @@ import type { PeerSyncStatus, TailscaleStatus, WebdavConfig } from "../types";
 
 const emit = defineEmits<{ close: [] }>();
 const {
-  settings, saveApiKey, loadSettings, loadTasks,
+  settings, saveApiKey, saveAiConfig, loadSettings, loadTasks,
   setTheme, exportToFile, importData,
   saveWebdav, getWebdavConfig, syncToWebdav, restoreFromWebdav,
   getTailscaleStatus, getPeerSyncStatus, savePeerSyncConfig,
@@ -34,9 +34,33 @@ const showPeerSecret = ref(false);
 const peerMsg = ref("");
 const peerBusy = ref(false);
 
+const ai = reactive({ provider: "jevai" as "jevai" | "openai", base_url: "", model: "", api_key: "" });
+const aiMsg = ref("");
+
+async function saveAi() {
+  aiMsg.value = "";
+  try {
+    await saveAiConfig({ ...ai });
+    ai.api_key = "";
+    aiMsg.value = "已保存";
+    setTimeout(() => (aiMsg.value = ""), 2000);
+  } catch (err: any) {
+    aiMsg.value = `保存失败: ${err}`;
+  }
+}
+
+function useOllama() {
+  ai.base_url = "http://localhost:11434/v1";
+  if (!ai.model) ai.model = "qwen2.5:7b";
+}
+
 onMounted(async () => {
   await loadSettings();
   theme.value = settings.value.theme || "light";
+  ai.provider = settings.value.ai_provider ?? "jevai";
+  ai.base_url = settings.value.ai_base_url ?? "";
+  ai.model = settings.value.ai_model ?? "";
+
   try {
     const saved = await getWebdavConfig();
     webdav.url = saved.url;
@@ -265,13 +289,36 @@ async function doRestore() {
             </div>
           </div>
           <div class="section">
+            <label class="section-label">AI 服务</label>
+            <div class="theme-row" role="radiogroup" aria-label="AI 服务">
+              <button class="theme-btn" :class="{ active: ai.provider === 'jevai' }" role="radio" :aria-checked="ai.provider === 'jevai'" @click="ai.provider = 'jevai'; saveAi()">TypeSafe AI</button>
+              <button class="theme-btn" :class="{ active: ai.provider === 'openai' }" role="radio" :aria-checked="ai.provider === 'openai'" @click="ai.provider = 'openai'">OpenAI 兼容 / Ollama</button>
+            </div>
+          </div>
+          <div v-if="ai.provider === 'openai'" class="section">
+            <label class="section-label">OpenAI 兼容接口</label>
+            <input v-model="ai.base_url" type="text" placeholder="https://api.openai.com/v1" aria-label="接口地址" />
+            <input v-model="ai.model" type="text" placeholder="模型名称，如 gpt-4o-mini、deepseek-chat、qwen2.5:7b" aria-label="模型名称" />
+            <input
+              v-model="ai.api_key"
+              type="password"
+              :placeholder="settings.openai_key_configured ? '已保存 Key（留空则不修改）' : 'API Key（本地 Ollama 可不填）'"
+              aria-label="API Key"
+            />
+            <p class="hint">支持 OpenAI、DeepSeek、通义千问、Moonshot 等兼容接口。<button class="link-btn" @click="useOllama">使用本机 Ollama</button>：任务内容不离开这台电脑。</p>
+            <div class="sync-row">
+              <button class="btn btn-primary btn-sm" :disabled="!ai.base_url.trim() || !ai.model.trim()" @click="saveAi">保存</button>
+              <span v-if="aiMsg" class="hint">{{ aiMsg }}</span>
+            </div>
+          </div>
+          <div v-else class="section">
             <label class="section-label">TypeSafe AI (JevAI) API Key</label>
             <div class="key-row">
               <input v-model="key" :type="showKey ? 'text' : 'password'" placeholder="sk-..." />
               <button class="btn btn-ghost btn-sm" @click="showKey = !showKey">显示</button>
             </div>
             <p class="hint">前往 <a href="https://dashboard.typesafe.ai" target="_blank" rel="noopener">dashboard.typesafe.ai</a> 获取 Key。Key 保存在系统凭据管理器中。</p>
-            <p class="hint">隐私提示：AI 分类会把你在向导里填写的任务内容发送给 TypeSafe AI；快速添加和手动选象限不会联网。</p>
+            <p class="hint">隐私提示：AI 分类会把你在向导里填写的任务内容发送给所选的 AI 服务；快速添加和手动选象限不会联网。想完全离线可以改用本机 Ollama。</p>
             <div class="status" :class="settings.api_key_configured ? 'ok' : 'warn'">
               <span class="dot"></span>{{ settings.api_key_configured ? "AI 分析已启用" : "未配置，AI 分析不可用" }}
             </div>
@@ -493,6 +540,8 @@ h3 { font-size: 16px; font-weight: 700; }
 .hint a { color: var(--primary); text-decoration: none; }
 .hint a:hover { text-decoration: underline; }
 .hint.warn-text { color: var(--warning); }
+.link-btn { color: var(--primary); padding: 0; font-size: inherit; }
+.link-btn:hover { text-decoration: underline; }
 .status {
   display: flex;
   align-items: center;
