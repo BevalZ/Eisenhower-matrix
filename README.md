@@ -20,7 +20,8 @@
 | 功能 | 说明 |
 |------|------|
 | 🤖 **AI 自动分类** | 对话式描述任务，JevAI 从重要性、紧急性两个维度评分，自动归入四象限并给出象限内优先级 |
-| 📊 **四象限看板** | 经典 2×2 矩阵，支持拖拽跨象限移动、同象限内排序、一键完成任务 |
+| 📊 **四象限看板** | 拖拽跨象限移动和同象限排序（落点预览、平滑让位、边缘自动滚动、Esc 取消）；支持键盘操作 |
+| ✏️ **快速录入与编辑** | 象限标题栏「+」只填标题即可添加；任务可随时编辑；删除和清除已完成都能撤销 |
 | 🌗 **双主题** | 浅色 / 深色一键切换，自动记忆偏好 |
 | 📈 **数据统计** | 完成率、各象限分布、近 7 天完成趋势 |
 | 📤 **导入导出** | JSON 备份导出与导入恢复，跨设备迁移 |
@@ -68,8 +69,8 @@
 
 ### 前置要求
 
-- **Rust** ≥ 1.77（[rustup.rs](https://rustup.rs/)）
-- **Node.js** ≥ 18
+- **Rust** ≥ 1.90（Tauri 2.12 的要求，[rustup.rs](https://rustup.rs/)）
+- **Node.js** ≥ 20
 - **系统依赖**：
   - **Windows**: 安装 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（Win10/11 通常已预装）
   - **macOS**: Xcode Command Line Tools（`xcode-select --install`）
@@ -85,13 +86,14 @@
 ```bash
 # 克隆
 git clone https://github.com/BevalZ/Eisenhower-matrix.git
-cd eisenhower-matrix
+cd Eisenhower-matrix
 
 # 安装依赖
 npm install
 
-# 生成应用图标（需要一张 1024×1024 的 PNG）
-npm run tauri icon app-icon.png
+# 单元测试（前端 + Rust）
+npm test
+(cd src-tauri && cargo test)
 
 # 开发模式
 npm run tauri dev
@@ -101,6 +103,21 @@ npm run tauri build
 ```
 
 构建产物位于 `src-tauri/target/release/bundle/`。
+
+### 不在本地构建：用 GitHub Actions 出测试包
+
+推送到 `main` 以外的任意分支，`Test Build` 工作流会先跑类型检查和单元测试，再打出 Windows 安装版和便携版，放在该次运行页面底部的 **Artifacts** 里（保留 14 天）。需要 macOS / Linux 包时，在 Actions 页面手动运行 `Test Build` 并勾选 “Also build macOS and Linux”。正式发布仍然是推送 `v*` tag 触发 `Release`。
+
+## 快捷键
+
+| 按键 | 作用 |
+|------|------|
+| `Ctrl/⌘ + N` | 新建任务（AI 向导） |
+| `Esc` | 关闭弹窗；拖拽中取消拖拽 |
+| 选中卡片后 `1`–`4` | 移到对应象限（Q1 重要且紧急 … Q4 不重要不紧急） |
+| 选中卡片后 `Alt + ↑/↓` | 在象限内上下移动 |
+| 选中卡片后 `Enter` / 双击 | 编辑 |
+| 选中卡片后 `空格` / `Delete` | 切换完成 / 删除（可撤销） |
 
 ## 配置
 
@@ -139,12 +156,15 @@ npm run tauri build
 ```
 ├── src/                      # 前端 Vue 3 + TypeScript
 │   ├── components/           # UI 组件
-│   │   ├── QuadrantBoard.vue # 四象限看板
+│   │   ├── QuadrantBoard.vue # 四象限看板（拖拽、键盘移动、快速添加）
 │   │   ├── TaskCard.vue      # 任务卡片
+│   │   ├── TaskEditDialog.vue# 任务编辑
 │   │   ├── TaskWizard.vue   # AI 对话创建
 │   │   ├── StatsPanel.vue   # 统计面板
+│   │   ├── ToastHost.vue    # 提示与撤销
 │   │   └── SettingsDialog.vue# 设置管理
-│   ├── composables/          # 状态与 Tauri 桥接
+│   ├── composables/          # 状态与 Tauri 桥接（useTasks / useBoardDrag / useToast）
+│   ├── ordering.ts           # 拖拽落点与排序（纯函数，有单元测试）
 │   ├── App.vue
 │   └── main.ts
 ├── src-tauri/                # Rust 后端
@@ -154,6 +174,7 @@ npm run tauri build
 │   │   ├── db.rs             # SQLite 数据层
 │   │   ├── jevai.rs          # TypeSafe AI 客户端
 │   │   ├── webdav.rs         # WebDAV 客户端
+│   │   ├── secrets.rs        # 系统凭据存储（API Key / WebDAV 密码）
 │   │   └── sync.rs           # Tailscale 多端同步
 │   ├── Cargo.toml
 │   └── tauri.conf.json
@@ -167,8 +188,12 @@ npm run tauri build
 | 平台 | 路径 |
 |------|------|
 | Linux | `~/.local/share/eisenhower-matrix/tasks.db` |
-| macOS | `~/Library/Application Support/com.eisenhower.app/tasks.db` |
-| Windows | `%APPDATA%\com.eisenhower.app\tasks.db` |
+| macOS | `~/Library/Application Support/eisenhower-matrix/tasks.db` |
+| Windows | `%APPDATA%\eisenhower-matrix\tasks.db` |
+
+API Key 和 WebDAV 密码保存在系统凭据管理器（Windows 凭据管理器 / macOS 钥匙串 / Linux Secret Service），不写进数据库；系统凭据不可用时才回退到数据库。
+
+> **隐私**：任务数据只存在本机和你自己的同步目标里。使用 AI 分类时，向导里填写的任务内容会发送给 TypeSafe AI；快速添加和手动选象限不联网。
 
 ## 技术栈
 
