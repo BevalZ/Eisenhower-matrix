@@ -102,6 +102,7 @@ export interface LearningStats {
   recent_corrections: FeedbackRecord[];
 }
 
+/** Colors are CSS variables so the dark theme in style.css applies. */
 export const QUADRANT_META: Record<
   Quadrant,
   { name: string; subtitle: string; color: string; bg: string; border: string }
@@ -109,30 +110,30 @@ export const QUADRANT_META: Record<
   1: {
     name: "重要且紧急",
     subtitle: "立即做",
-    color: "#f53f3f",
-    bg: "rgba(245,63,63,0.06)",
-    border: "rgba(245,63,63,0.3)",
+    color: "var(--q1)",
+    bg: "var(--q1-light)",
+    border: "var(--q1-border)",
   },
   2: {
     name: "重要不紧急",
     subtitle: "计划做",
-    color: "#3457d5",
-    bg: "rgba(52,87,213,0.06)",
-    border: "rgba(52,87,213,0.3)",
+    color: "var(--q2)",
+    bg: "var(--q2-light)",
+    border: "var(--q2-border)",
   },
   3: {
     name: "紧急不重要",
     subtitle: "委托或快做",
-    color: "#ff7d00",
-    bg: "rgba(255,125,0,0.06)",
-    border: "rgba(255,125,0,0.3)",
+    color: "var(--q3)",
+    bg: "var(--q3-light)",
+    border: "var(--q3-border)",
   },
   4: {
     name: "不重要不紧急",
     subtitle: "删除或少做",
-    color: "#86909c",
-    bg: "rgba(134,144,156,0.06)",
-    border: "rgba(134,144,156,0.3)",
+    color: "var(--q4)",
+    bg: "var(--q4-light)",
+    border: "var(--q4-border)",
   },
 };
 

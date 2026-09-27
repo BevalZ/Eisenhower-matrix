@@ -24,6 +24,14 @@ pub struct TaskInput {
     pub urgency_score: f64,
 }
 
+/// One row of a drag-and-drop reorder: the task's new quadrant and priority.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TaskMove {
+    pub id: i64,
+    pub quadrant: i64,
+    pub priority: f64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ClassificationResult {
     pub quadrant: i64,
@@ -222,4 +230,30 @@ pub fn scores_to_quadrant(importance: f64, urgency: f64) -> i64 {
 /// Importance weight 0.6, urgency weight 0.4.
 pub fn compute_priority(importance: f64, urgency: f64) -> f64 {
     (importance / 4.0 * 0.6 + urgency / 4.0 * 0.4) * 100.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quadrant_threshold_is_inclusive() {
+        assert_eq!(scores_to_quadrant(2.5, 2.5), 1);
+        assert_eq!(scores_to_quadrant(2.5, 2.49), 2);
+        assert_eq!(scores_to_quadrant(2.49, 2.5), 3);
+        assert_eq!(scores_to_quadrant(0.0, 0.0), 4);
+    }
+
+    #[test]
+    fn priority_spans_zero_to_hundred() {
+        assert!(compute_priority(0.0, 0.0).abs() < 1e-9);
+        assert!((compute_priority(4.0, 4.0) - 100.0).abs() < 1e-9);
+        assert!(compute_priority(4.0, 0.0) > compute_priority(0.0, 4.0));
+    }
+
+    #[test]
+    fn labels_clamp_out_of_range_scores() {
+        assert_eq!(label_for(-1.0, &IMPORTANCE_LABELS), IMPORTANCE_LABELS[0]);
+        assert_eq!(label_for(9.0, &URGENCY_LABELS), URGENCY_LABELS[4]);
+    }
 }

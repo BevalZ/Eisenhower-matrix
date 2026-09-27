@@ -3,6 +3,7 @@ use serde_json::json;
 use crate::models::*;
 
 const API_URL: &str = "https://api.typesafe.ai/v1/systemone";
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub async fn classify(
     api_key: &str,
@@ -25,8 +26,14 @@ pub async fn classify(
         "Immediate — must be done right now or is already overdue",
     ];
 
+    // Without today's date the model cannot tell how close "下周五" is.
+    let today = chrono::Local::now().format("%Y-%m-%d (%A)");
+    let state = format!(
+        "Today is {today}. Judge any dates or deadlines relative to today.\n\n{description}"
+    );
+
     let body = json!({
-        "state": description,
+        "state": state,
         "model": "jev-latest",
         "questions": {
             "importance": {
@@ -42,14 +49,23 @@ pub async fn classify(
         }
     });
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .build()
+        .map_err(|e| format!("无法创建网络客户端: {}", e))?;
     let resp = client
         .post(API_URL)
         .bearer_auth(api_key)
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("请求失败: {}", e))?;
+        .map_err(|e| {
+            if e.is_timeout() {
+                "AI 服务响应超时，请稍后重试".to_string()
+            } else {
+                format!("请求失败: {}", e)
+            }
+        })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -58,11 +74,7 @@ pub async fn classify(
     }
 
     let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-
-    let raw_importance = v["answers"]["importance"]["score"]
-        .as_f64()
-        .unwrap_or(2.5);
-    let raw_urgency = v["answers"]["urgency"]["score"].as_f64().unwrap_or(2.5);
+    let (raw_importance, raw_urgency) = parse_scores(&v)?;
 
     // Apply user-calibrated bias from accumulated feedback
     let importance_score = (raw_importance + imp_bias).clamp(0.0, 4.0);
@@ -79,4 +91,37 @@ pub async fn classify(
         importance_label: label_for(importance_score, &IMPORTANCE_LABELS),
         urgency_label: label_for(urgency_score, &URGENCY_LABELS),
     })
+}
+
+/// Read both scores from the API answer. A missing score is an error: falling back to a
+/// default would silently file every task into the same quadrant if the API format changes.
+fn parse_scores(v: &serde_json::Value) -> Result<(f64, f64), String> {
+    let score = |key: &str, label: &str| {
+        v["answers"][key]["score"]
+            .as_f64()
+            .filter(|s| s.is_finite())
+            .ok_or_else(|| format!("AI 返回结果缺少{label}评分，请稍后重试或手动选择象限"))
+    };
+    Ok((score("importance", "重要性")?, score("urgency", "紧急性")?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_both_scores() {
+        let v = json!({ "answers": { "importance": { "score": 3 }, "urgency": { "score": 1.5 } } });
+        assert_eq!(parse_scores(&v).unwrap(), (3.0, 1.5));
+    }
+
+    #[test]
+    fn missing_or_invalid_scores_are_errors() {
+        let missing = json!({ "answers": { "importance": { "score": 3 } } });
+        assert!(parse_scores(&missing).unwrap_err().contains("紧急性"));
+        let text =
+            json!({ "answers": { "importance": { "score": "high" }, "urgency": { "score": 1 } } });
+        assert!(parse_scores(&text).unwrap_err().contains("重要性"));
+        assert!(parse_scores(&json!({ "error": "bad" })).is_err());
+    }
 }

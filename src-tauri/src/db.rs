@@ -23,6 +23,16 @@ impl Db {
         Ok(db)
     }
 
+    #[cfg(test)]
+    pub fn open_in_memory() -> Result<Self, String> {
+        let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+        let db = Db {
+            conn: Mutex::new(conn),
+        };
+        db.migrate()?;
+        Ok(db)
+    }
+
     fn migrate(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
@@ -197,7 +207,7 @@ impl Db {
                         created_at, completed_at
                  FROM tasks
                  WHERE deleted_at IS NULL
-                 ORDER BY done ASC, priority DESC",
+                 ORDER BY done ASC, priority DESC, id ASC",
             )
             .map_err(|e| e.to_string())?;
 
@@ -312,28 +322,58 @@ impl Db {
         Ok(())
     }
 
-    pub fn move_task(&self, id: i64, quadrant: i64, priority: f64) -> Result<(), String> {
-        validate_quadrant(quadrant)?;
-        validate_priority(priority)?;
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+    /// Apply a drag-and-drop reorder atomically: either every row moves or none does.
+    pub fn reorder_tasks(&self, moves: &[TaskMove]) -> Result<(), String> {
+        if moves.is_empty() {
+            return Ok(());
+        }
+        if moves.len() > 5000 {
+            return Err("一次移动的任务过多".into());
+        }
+        for m in moves {
+            validate_quadrant(m.quadrant)?;
+            validate_priority(m.priority)?;
+        }
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
         let now = Utc::now().timestamp_millis();
-        let device = device_id_locked(&conn)?;
-        conn.execute(
-            "UPDATE tasks
-             SET quadrant = ?1, priority = ?2,
-                 updated_at = max(updated_at + 1, ?3), updated_by = ?4
-             WHERE id = ?5 AND deleted_at IS NULL",
-            params![quadrant, priority, now, device, id],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
+        let device = device_id_locked(&tx)?;
+        for m in moves {
+            let changed = tx
+                .execute(
+                    "UPDATE tasks
+                     SET quadrant = ?1, priority = ?2,
+                         updated_at = max(updated_at + 1, ?3), updated_by = ?4
+                     WHERE id = ?5 AND deleted_at IS NULL",
+                    params![m.quadrant, m.priority, now, device, m.id],
+                )
+                .map_err(|e| e.to_string())?;
+            if changed == 0 {
+                return Err("任务不存在或已被删除，请刷新后重试".into());
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())
     }
 
-    pub fn clear_done(&self) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+    /// Soft-delete all finished tasks; returns their ids so the UI can undo.
+    pub fn clear_done(&self) -> Result<Vec<i64>, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let ids: Vec<i64> = {
+            let mut stmt = tx
+                .prepare("SELECT id FROM tasks WHERE done = 1 AND deleted_at IS NULL")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, i64>(0))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        };
+        if ids.is_empty() {
+            return Ok(ids);
+        }
         let now = Utc::now().timestamp_millis();
-        let device = device_id_locked(&conn)?;
-        conn.execute(
+        let device = device_id_locked(&tx)?;
+        tx.execute(
             "UPDATE tasks
              SET deleted_at = max(updated_at + 1, ?1),
                  updated_at = max(updated_at + 1, ?1),
@@ -342,19 +382,53 @@ impl Db {
             params![now, device],
         )
         .map_err(|e| e.to_string())?;
-        Ok(())
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(ids)
+    }
+
+    /// Undo a delete. Clearing the tombstone with a newer timestamp also propagates to peers.
+    pub fn restore_tasks(&self, ids: &[i64]) -> Result<usize, String> {
+        if ids.len() > 5000 {
+            return Err("一次恢复的任务过多".into());
+        }
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let now = Utc::now().timestamp_millis();
+        let device = device_id_locked(&tx)?;
+        let mut restored = 0usize;
+        for &id in ids {
+            restored += tx
+                .execute(
+                    "UPDATE tasks
+                     SET deleted_at = NULL,
+                         updated_at = max(updated_at + 1, ?1),
+                         updated_by = ?2
+                     WHERE id = ?3 AND deleted_at IS NOT NULL",
+                    params![now, device, id],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(restored)
     }
 
     // ---- Stats ----
 
+    /// Finished tasks stay in the statistics after "清除已完成" (a tombstone keeps
+    /// done/completed_at), so clearing the board does not wipe completion history.
+    /// Deleted unfinished tasks are dropped: they were abandoned, not pending.
     pub fn get_stats(&self) -> Result<StatsSummary, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
         let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL", params![], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL OR done = 1",
+                params![],
+                |r| r.get(0),
+            )
             .map_err(|e| e.to_string())?;
         let done: i64 = conn
-            .query_row("SELECT COUNT(*) FROM tasks WHERE done = 1 AND deleted_at IS NULL", params![], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM tasks WHERE done = 1", params![], |r| r.get(0))
             .map_err(|e| e.to_string())?;
         let pending = total - done;
         let rate = if total > 0 { done as f64 / total as f64 } else { 0.0 };
@@ -363,14 +437,14 @@ impl Db {
         for q in 1..=4i64 {
             let qtotal: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM tasks WHERE quadrant = ?1 AND deleted_at IS NULL",
+                    "SELECT COUNT(*) FROM tasks WHERE quadrant = ?1 AND (deleted_at IS NULL OR done = 1)",
                     params![q],
                     |r| r.get(0),
                 )
                 .map_err(|e| e.to_string())?;
             let qdone: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM tasks WHERE quadrant = ?1 AND done = 1 AND deleted_at IS NULL",
+                    "SELECT COUNT(*) FROM tasks WHERE quadrant = ?1 AND done = 1",
                     params![q],
                     |r| r.get(0),
                 )
@@ -388,7 +462,7 @@ impl Db {
             let end_ms = local_midnight_ms(next)?;
             let count: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM tasks WHERE done = 1 AND deleted_at IS NULL AND completed_at >= ?1 AND completed_at < ?2",
+                    "SELECT COUNT(*) FROM tasks WHERE done = 1 AND completed_at >= ?1 AND completed_at < ?2",
                     params![start_ms, end_ms],
                     |r| r.get(0),
                 )
@@ -867,4 +941,126 @@ fn db_path() -> Result<PathBuf, String> {
         .ok_or("cannot determine data dir")?
         .join("eisenhower-matrix");
     Ok(base.join("tasks.db"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input(title: &str, quadrant: i64, priority: f64) -> TaskInput {
+        TaskInput {
+            title: title.into(),
+            description: String::new(),
+            quadrant,
+            priority,
+            importance_score: 3.0,
+            urgency_score: 3.0,
+        }
+    }
+
+    fn mv(id: i64, quadrant: i64, priority: f64) -> TaskMove {
+        TaskMove { id, quadrant, priority }
+    }
+
+    fn find(db: &Db, id: i64) -> Task {
+        db.get_tasks().unwrap().into_iter().find(|t| t.id == id).unwrap()
+    }
+
+    #[test]
+    fn reorder_moves_all_rows_or_none() {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.create_task(&input("a", 1, 80.0)).unwrap();
+        let b = db.create_task(&input("b", 1, 60.0)).unwrap();
+
+        db.reorder_tasks(&[mv(a.id, 2, 55.0), mv(b.id, 1, 90.0)]).unwrap();
+        assert_eq!((find(&db, a.id).quadrant, find(&db, a.id).priority), (2, 55.0));
+        assert_eq!((find(&db, b.id).quadrant, find(&db, b.id).priority), (1, 90.0));
+
+        // An unknown id rolls back the whole batch.
+        assert!(db.reorder_tasks(&[mv(a.id, 3, 10.0), mv(9999, 1, 50.0)]).is_err());
+        assert_eq!(find(&db, a.id).quadrant, 2);
+
+        assert!(db.reorder_tasks(&[mv(a.id, 5, 10.0)]).is_err());
+        assert!(db.reorder_tasks(&[mv(a.id, 1, 100.5)]).is_err());
+        assert!(db.reorder_tasks(&[mv(a.id, 1, f64::NAN)]).is_err());
+        assert!(db.reorder_tasks(&[]).is_ok());
+    }
+
+    #[test]
+    fn get_tasks_breaks_priority_ties_by_id() {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.create_task(&input("a", 1, 50.0)).unwrap();
+        let b = db.create_task(&input("b", 1, 50.0)).unwrap();
+        let ids: Vec<i64> = db.get_tasks().unwrap().iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec![a.id, b.id]);
+    }
+
+    #[test]
+    fn clearing_done_keeps_history_and_can_be_undone() {
+        let db = Db::open_in_memory().unwrap();
+        let done = db.create_task(&input("done", 2, 50.0)).unwrap();
+        let open = db.create_task(&input("open", 2, 40.0)).unwrap();
+        db.toggle_done(done.id).unwrap();
+
+        let cleared = db.clear_done().unwrap();
+        assert_eq!(cleared, vec![done.id]);
+        let visible: Vec<i64> = db.get_tasks().unwrap().iter().map(|t| t.id).collect();
+        assert_eq!(visible, vec![open.id]);
+
+        let stats = db.get_stats().unwrap();
+        assert_eq!((stats.total, stats.done, stats.pending), (2, 1, 1));
+        assert_eq!(stats.by_quadrant[&2].done, 1);
+        assert_eq!(stats.recent_completed.last().unwrap().count, 1);
+
+        assert_eq!(db.restore_tasks(&cleared).unwrap(), 1);
+        assert!(find(&db, done.id).done);
+        assert_eq!(db.restore_tasks(&cleared).unwrap(), 0);
+        assert_eq!(db.clear_done().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deleted_unfinished_tasks_leave_the_stats() {
+        let db = Db::open_in_memory().unwrap();
+        let t = db.create_task(&input("drop me", 4, 20.0)).unwrap();
+        db.delete_task(t.id).unwrap();
+        let stats = db.get_stats().unwrap();
+        assert_eq!((stats.total, stats.pending), (0, 0));
+
+        db.restore_tasks(&[t.id]).unwrap();
+        assert_eq!(db.get_stats().unwrap().pending, 1);
+    }
+
+    #[test]
+    fn failed_import_leaves_existing_tasks_untouched() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_task(&input("keep", 1, 70.0)).unwrap();
+        let good = db.export_all().unwrap();
+
+        let mut bad: serde_json::Value = serde_json::from_str(&good).unwrap();
+        bad["tasks"][0]["quadrant"] = serde_json::json!(7);
+        assert!(db.import_all(&bad.to_string()).is_err());
+        assert_eq!(db.get_tasks().unwrap().len(), 1);
+
+        assert_eq!(db.import_all(&good).unwrap(), 1);
+        assert_eq!(db.get_tasks().unwrap()[0].title, "keep");
+    }
+
+    #[test]
+    fn sync_merge_keeps_the_newest_version() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_task(&input("local", 1, 50.0)).unwrap();
+        let mut remote = db.sync_snapshot().unwrap().remove(0);
+
+        remote.title = "remote".into();
+        remote.updated_at += 10;
+        remote.updated_by = "peer-device".into();
+        assert_eq!(db.merge_remote(std::slice::from_ref(&remote)).unwrap(), 1);
+        assert_eq!(db.get_tasks().unwrap()[0].title, "remote");
+
+        let mut stale = remote.clone();
+        stale.title = "stale".into();
+        stale.updated_at -= 100;
+        assert_eq!(db.merge_remote(&[stale]).unwrap(), 0);
+        assert_eq!(db.get_tasks().unwrap()[0].title, "remote");
+    }
 }

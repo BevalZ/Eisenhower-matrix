@@ -37,18 +37,18 @@ fn delete_task(id: i64, state: tauri::State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn move_task(
-    id: i64,
-    quadrant: i64,
-    priority: f64,
-    state: tauri::State<AppState>,
-) -> Result<(), String> {
-    state.db.move_task(id, quadrant, priority)
+fn reorder_tasks(moves: Vec<TaskMove>, state: tauri::State<AppState>) -> Result<(), String> {
+    state.db.reorder_tasks(&moves)
 }
 
 #[tauri::command]
-fn clear_done_tasks(state: tauri::State<AppState>) -> Result<(), String> {
+fn clear_done_tasks(state: tauri::State<AppState>) -> Result<Vec<i64>, String> {
     state.db.clear_done()
+}
+
+#[tauri::command]
+fn restore_tasks(ids: Vec<i64>, state: tauri::State<AppState>) -> Result<usize, String> {
+    state.db.restore_tasks(&ids)
 }
 
 #[tauri::command]
@@ -324,8 +324,9 @@ pub fn run() {
             create_task,
             toggle_task_done,
             delete_task,
-            move_task,
+            reorder_tasks,
             clear_done_tasks,
+            restore_tasks,
             get_stats,
             get_settings,
             set_api_key,

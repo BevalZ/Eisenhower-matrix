@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import QuadrantBoard from "./components/QuadrantBoard.vue";
@@ -7,13 +7,35 @@ import TaskWizard from "./components/TaskWizard.vue";
 import StatsPanel from "./components/StatsPanel.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import FloatingBall from "./components/FloatingBall.vue";
+import ToastHost from "./components/ToastHost.vue";
 import { useTasks } from "./composables/useTasks";
 
-const { loadTasks, loadSettings, clearDone, loading, applyTheme, settings } = useTasks();
+const { tasks, loadTasks, loadSettings, clearDone, loading, applyTheme, settings } = useTasks();
 
 const view = ref<"board" | "stats">("board");
 const showWizard = ref(false);
 const showSettings = ref(false);
+// Only the very first load shows the skeleton; later reloads keep the board on screen.
+const showSkeleton = computed(() => loading.value && !tasks.value.length);
+
+function openSettingsFromWizard() {
+  showWizard.value = false;
+  showSettings.value = true;
+}
+
+function onGlobalKeyDown(e: KeyboardEvent) {
+  if (isBallWindow.value || e.isComposing) return;
+  if (e.key === "Escape" && (showWizard.value || showSettings.value)) {
+    e.preventDefault();
+    showWizard.value = false;
+    showSettings.value = false;
+  } else if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "n") {
+    e.preventDefault();
+    if (!showSettings.value) showWizard.value = true;
+  }
+}
+
+onUnmounted(() => window.removeEventListener("keydown", onGlobalKeyDown));
 
 const windowLabel = getCurrentWindow().label;
 const isBallWindow = computed(() => windowLabel === "floating-ball");
@@ -28,6 +50,7 @@ onMounted(async () => {
     document.body.style.background = "transparent";
     return;
   }
+  window.addEventListener("keydown", onGlobalKeyDown);
   await Promise.all([loadTasks(), loadSettings()]);
   applyTheme(settings.value.theme || "light");
 });
@@ -84,7 +107,7 @@ onMounted(async () => {
             <path d="M8 1v2M8 13v2M1 8h2M13 8h2M2.8 2.8l1.4 1.4M11.8 11.8l1.4 1.4M2.8 13.2l1.4-1.4M11.8 4.2l1.4-1.4"/>
           </svg>
         </button>
-        <button class="btn btn-primary btn-sm" @click="showWizard = true">
+        <button class="btn btn-primary btn-sm" title="新建任务（Ctrl+N）" @click="showWizard = true">
           <span class="plus">+</span> 新建任务
         </button>
       </div>
@@ -93,22 +116,23 @@ onMounted(async () => {
     <!-- Content -->
     <main class="content">
       <!-- Loading skeleton -->
-      <div v-if="loading" class="loading-wrap">
+      <div v-if="showSkeleton" class="loading-wrap">
         <div v-for="i in 4" :key="i" class="skeleton-col">
           <div class="skeleton" style="height: 28px; margin-bottom: 12px;"></div>
           <div v-for="j in 3" :key="j" class="skeleton" style="height: 60px; margin-bottom: 8px;"></div>
         </div>
       </div>
 
-      <transition name="view-fade" mode="out-in">
+      <transition v-else name="view-fade" mode="out-in">
         <QuadrantBoard v-if="view === 'board'" key="board" />
         <StatsPanel v-else key="stats" />
       </transition>
     </main>
 
     <!-- Modals -->
-    <TaskWizard v-if="showWizard" @close="showWizard = false" />
+    <TaskWizard v-if="showWizard" @close="showWizard = false" @open-settings="openSettingsFromWizard" />
     <SettingsDialog v-if="showSettings" @close="showSettings = false" />
+    <ToastHost />
   </div>
 </template>
 
@@ -126,13 +150,8 @@ onMounted(async () => {
   height: 54px;
   background: var(--surface);
   border-bottom: 1px solid var(--border-light);
-  -webkit-app-region: drag;
   z-index: 10;
   position: relative;
-}
-.titlebar button,
-.titlebar .nav {
-  -webkit-app-region: no-drag;
 }
 .brand {
   display: flex;

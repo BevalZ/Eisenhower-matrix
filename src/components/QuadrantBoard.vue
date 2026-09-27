@@ -1,97 +1,13 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from "vue";
+import { computed, nextTick, ref } from "vue";
 import TaskCard from "./TaskCard.vue";
 import type { Task, Quadrant } from "../types";
 import { QUADRANT_META } from "../types";
 import { useTasks } from "../composables/useTasks";
+import { useBoardDrag } from "../composables/useBoardDrag";
+import { clampIndex, naturalIndex, planDrop, type TaskMove } from "../ordering";
 
-const { toggleTaskDone, deleteTask, moveTask, tasksByQuadrant } = useTasks();
-
-const dragOverQuadrant = ref<Quadrant | null>(null);
-const draggingTask = ref<Task | null>(null);
-const dragPos = ref({ x: 0, y: 0 });
-let dragStartX = 0, dragStartY = 0;
-let isPotentialDrag = false;
-let pendingTask: Task | null = null;
-
-function priorityAt(list: Task[], index: number): number {
-  const above = list[index - 1];
-  const below = list[index];
-  if (!above && !below) return 50;
-  if (!above) return Math.min(100, below.priority + 5);
-  if (!below) return Math.max(0, above.priority - 5);
-  return (above.priority + below.priority) / 2;
-}
-
-function isQuadrant(value: number): value is Quadrant {
-  return value === 1 || value === 2 || value === 3 || value === 4;
-}
-
-function onCardPointerDown(e: PointerEvent, task: Task) {
-  if (e.button !== 0) return;
-  pendingTask = task;
-  isPotentialDrag = true;
-  dragStartX = e.clientX;
-  dragStartY = e.clientY;
-  dragPos.value = { x: e.clientX, y: e.clientY };
-  window.addEventListener("pointermove", onPointerMove);
-  window.addEventListener("pointerup", onPointerUp);
-}
-
-function onPointerMove(e: PointerEvent) {
-  if (!isPotentialDrag || !pendingTask) return;
-  const dx = e.clientX - dragStartX;
-  const dy = e.clientY - dragStartY;
-  if (!draggingTask.value && Math.hypot(dx, dy) < 5) return;
-  if (!draggingTask.value) draggingTask.value = pendingTask;
-
-  dragPos.value = { x: e.clientX, y: e.clientY };
-
-  const el = document.elementFromPoint(e.clientX, e.clientY);
-  const quadrantEl = el?.closest("[data-quadrant]") as HTMLElement | null;
-  const quadrant = Number(quadrantEl?.dataset.quadrant);
-  dragOverQuadrant.value = isQuadrant(quadrant) ? quadrant : null;
-}
-
-async function onPointerUp(e: PointerEvent) {
-  window.removeEventListener("pointermove", onPointerMove);
-  window.removeEventListener("pointerup", onPointerUp);
-  isPotentialDrag = false;
-  const task = draggingTask.value;
-  pendingTask = null;
-
-  if (task) {
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    const quadrantEl = el?.closest("[data-quadrant]") as HTMLElement | null;
-    const q = Number(quadrantEl?.dataset.quadrant);
-    if (quadrantEl && isQuadrant(q)) {
-      const cards = [...quadrantEl.querySelectorAll<HTMLElement>("[data-task-id]")]
-        .filter((card) => card.dataset.taskId !== String(task.id));
-      let index = cards.length;
-      for (let i = 0; i < cards.length; i++) {
-        const rect = cards[i].getBoundingClientRect();
-        if (e.clientY < rect.top + rect.height / 2) {
-          index = i;
-          break;
-        }
-      }
-      const currentIndex = tasksByQuadrant(task.quadrant).findIndex((item) => item.id === task.id);
-      if (!(q === task.quadrant && index === currentIndex)) {
-        const list = tasksByQuadrant(q).filter((item) => item.id !== task.id);
-        const priority = Math.min(100, Math.max(0, priorityAt(list, index)));
-        await moveTask(task.id, q, priority);
-      }
-    }
-  }
-
-  draggingTask.value = null;
-  dragOverQuadrant.value = null;
-}
-
-onUnmounted(() => {
-  window.removeEventListener("pointermove", onPointerMove);
-  window.removeEventListener("pointerup", onPointerUp);
-});
+const { toggleTaskDone, deleteTask, reorderTasks, holdRemoteRefresh, tasksByQuadrant } = useTasks();
 
 const quadrants: Quadrant[] = [1, 2, 3, 4];
 const layout: Record<Quadrant, { row: number; col: number }> = {
@@ -100,62 +16,139 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   3: { row: 1, col: 1 },
   4: { row: 1, col: 0 },
 };
+
+const { dragging, slot, outside, settling, ghostSize, ghostEl, setZone, setBody, onPointerDown } =
+  useBoardDrag({
+    list: tasksByQuadrant,
+    commit: reorderTasks,
+    lock: holdRemoteRefresh,
+  });
+
+type Row = { key: string; slot: true } | { key: string; slot: false; task: Task };
+
+/** Cards per quadrant; while dragging, the dragged card is replaced by a placeholder at the drop slot. */
+const rows = computed(() => {
+  const out = {} as Record<Quadrant, Row[]>;
+  const d = dragging.value;
+  for (const q of quadrants) {
+    const list: Row[] = tasksByQuadrant(q)
+      .filter((t) => t.id !== d?.id)
+      .map((task) => ({ key: `t${task.id}`, slot: false, task }));
+    if (d && slot.value?.q === q) list.splice(slot.value.index, 0, { key: "drop-slot", slot: true });
+    out[q] = list;
+  }
+  return out;
+});
+
+// ---- Keyboard moves (1-4 = quadrant, Alt+↑/↓ = order) ----
+
+const liveMessage = ref("");
+
+function applyKeyboardMoves(task: Task, moves: TaskMove[], message: string) {
+  if (!moves.length) return;
+  void reorderTasks(moves);
+  liveMessage.value = message;
+  // The card is re-mounted (other quadrant) or re-inserted (new order); keep keyboard focus on it.
+  void nextTick(() => {
+    document.querySelector<HTMLElement>(`[data-task-id="${task.id}"]`)?.focus();
+  });
+}
+
+function moveToQuadrant(task: Task, q: Quadrant) {
+  if (task.quadrant === q) return;
+  const list = tasksByQuadrant(q);
+  const index = clampIndex(list, task.done, naturalIndex(list, task));
+  applyKeyboardMoves(task, planDrop(task, q, list, index), `已移到「${QUADRANT_META[q].name}」第 ${index + 1} 位`);
+}
+
+function nudge(task: Task, delta: -1 | 1) {
+  const full = tasksByQuadrant(task.quadrant);
+  const from = full.findIndex((t) => t.id === task.id);
+  const list = full.filter((t) => t.id !== task.id);
+  const to = clampIndex(list, task.done, from + delta);
+  if (from < 0 || to === from) return;
+  applyKeyboardMoves(task, planDrop(task, task.quadrant, list, to), `已移到第 ${to + 1} 位`);
+}
 </script>
 
 <template>
-  <div class="board">
+  <div class="board" :class="{ dragging: !!dragging }">
     <div class="axis-axis">
       <span class="axis-label axis-y">↑ 重要</span>
       <div class="grid">
-        <div
+        <section
           v-for="q in quadrants"
           :key="q"
+          :ref="(el) => setZone(q, el)"
           class="quadrant"
-          :data-quadrant="q"
-          :class="{ 'drag-over': dragOverQuadrant === q }"
+          :class="{ 'drop-target': !!dragging && !outside && slot?.q === q }"
           :style="{
             gridRow: layout[q].row + 1,
             gridColumn: layout[q].col + 1,
+            '--q-color': QUADRANT_META[q].color,
+            '--q-light': QUADRANT_META[q].bg,
           }"
+          :aria-label="`${QUADRANT_META[q].name}，${tasksByQuadrant(q).length} 个任务`"
         >
           <div class="q-header">
-            <span class="q-bar" :style="{ background: QUADRANT_META[q].color }"></span>
+            <span class="q-bar"></span>
             <div class="q-title-wrap">
-              <span class="q-title" :style="{ color: QUADRANT_META[q].color }">{{ QUADRANT_META[q].name }}</span>
+              <span class="q-title">{{ QUADRANT_META[q].name }}</span>
               <span class="q-sub">{{ QUADRANT_META[q].subtitle }}</span>
             </div>
+            <kbd class="q-key" :title="`选中卡片后按 ${q} 移到这里`">{{ q }}</kbd>
             <span class="q-count">{{ tasksByQuadrant(q).length }}</span>
           </div>
-          <div class="q-body">
-            <TaskCard
-              v-for="task in tasksByQuadrant(q)"
-              :key="task.id"
-              :task="task"
-              @toggle="toggleTaskDone"
-              @remove="deleteTask"
-              @pointer-down="onCardPointerDown"
-            />
-            <div v-if="!tasksByQuadrant(q).length" class="empty">
+          <div :ref="(el) => setBody(q, el)" class="q-body">
+            <TransitionGroup tag="div" name="card" :css="false" class="q-list" role="list">
+              <template v-for="row in rows[q]" :key="row.key">
+                <div
+                  v-if="row.slot"
+                  class="drop-slot"
+                  :style="{ height: ghostSize.height + 'px' }"
+                  aria-hidden="true"
+                ></div>
+                <TaskCard
+                  v-else
+                  :task="row.task"
+                  @toggle="toggleTaskDone"
+                  @remove="deleteTask"
+                  @pointer-down="onPointerDown"
+                  @move-to="moveToQuadrant"
+                  @nudge="nudge"
+                />
+              </template>
+            </TransitionGroup>
+            <div v-if="!rows[q].length" class="empty">
               <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.2">
                 <rect x="4" y="4" width="20" height="20" rx="3" stroke-dasharray="3 3"/>
                 <path d="M14 10v8M10 14h8" stroke-linecap="round"/>
               </svg>
-              <span>拖入任务</span>
+              <span>拖入任务，或选中卡片按 {{ q }}</span>
             </div>
           </div>
-        </div>
+        </section>
       </div>
       <span class="axis-label axis-x">← 不紧急 &nbsp;&nbsp;|&nbsp;&nbsp; 紧急 →</span>
     </div>
 
-    <!-- Drag ghost -->
-    <div
-      v-if="draggingTask"
-      class="drag-ghost"
-      :style="{ left: dragPos.x + 'px', top: dragPos.y + 'px' }"
-    >
-      {{ draggingTask.title }}
-    </div>
+    <!-- Drag ghost: a copy of the card that follows the pointer -->
+    <Teleport to="body">
+      <div
+        v-if="dragging"
+        ref="ghostEl"
+        class="drag-ghost"
+        :class="{ settling, outside }"
+        :style="{ width: ghostSize.width + 'px', height: ghostSize.height + 'px' }"
+      >
+        <TaskCard :task="dragging" ghost />
+      </div>
+    </Teleport>
+
+    <p id="board-keyboard-help" class="sr-only">
+      按数字键 1 到 4 移到对应象限，Alt 加上下方向键调整顺序，空格切换完成，Delete 删除。
+    </p>
+    <div class="sr-only" aria-live="polite">{{ liveMessage }}</div>
   </div>
 </template>
 
@@ -173,6 +166,7 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   display: flex;
   flex-direction: column;
   position: relative;
+  min-height: 0;
 }
 .axis-label {
   font-size: 11px;
@@ -206,12 +200,13 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   flex-direction: column;
   overflow: hidden;
   transition: border-color var(--dur-fast) var(--ease),
-    box-shadow var(--dur-fast) var(--ease);
+    box-shadow var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease);
   box-shadow: var(--shadow-xs);
 }
-.quadrant.drag-over {
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-light);
+.quadrant.drop-target {
+  border-color: var(--q-color);
+  box-shadow: 0 0 0 3px var(--q-light), var(--shadow-xs);
 }
 .q-header {
   display: flex;
@@ -221,12 +216,25 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   border-bottom: 1px solid var(--border-light);
   background: var(--surface-2);
 }
-.q-bar { width: 4px; height: 20px; border-radius: 2px; flex-shrink: 0; }
+.q-bar { width: 4px; height: 20px; border-radius: 2px; flex-shrink: 0; background: var(--q-color); }
 .q-title-wrap { display: flex; flex-direction: column; gap: 1px; }
-.q-title { font-weight: 600; font-size: 13px; line-height: 1.2; }
+.q-title { font-weight: 600; font-size: 13px; line-height: 1.2; color: var(--q-color); }
 .q-sub { font-size: 11px; color: var(--text-muted); }
-.q-count {
+.q-key {
   margin-left: auto;
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.board:focus-within .q-key { opacity: 1; }
+.q-count {
   font-size: 11px;
   font-weight: 600;
   background: var(--surface);
@@ -236,7 +244,14 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
-.q-body { flex: 1; overflow-y: auto; padding: 10px; }
+/* Positioned so card offsetTop is measured from here (see useBoardDrag.slotIndex). */
+.q-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+}
 .empty {
   display: flex;
   flex-direction: column;
@@ -247,21 +262,35 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   padding: 40px 0;
   opacity: 0.6;
 }
+
+/* Siblings glide out of the way (FLIP via TransitionGroup move class). */
+.q-list > .card-move {
+  transition: transform 0.2s var(--ease);
+}
+.drop-slot {
+  box-sizing: border-box;
+  margin-bottom: 8px;
+  border: 1.5px dashed var(--q-color);
+  border-radius: var(--radius);
+  background: var(--q-light);
+}
+
 .drag-ghost {
   position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 150;
   pointer-events: none;
-  z-index: 9999;
-  background: var(--primary);
-  color: white;
-  padding: 8px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 500;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.2);
-  transform: translate(-50%, -50%);
-  max-width: 250px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  will-change: transform;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.drag-ghost > .task-card {
+  height: 100%;
+}
+.drag-ghost.outside {
+  opacity: 0.55;
+}
+.drag-ghost.settling {
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), opacity var(--dur-fast) var(--ease);
 }
 </style>

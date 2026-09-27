@@ -16,6 +16,7 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npx vue-tsc --noEmit
+      - run: npm test
       - run: npm run build
 
   rust-check:
@@ -32,3 +33,4 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - run: cd src-tauri && cargo check
+      - run: cd src-tauri && cargo test

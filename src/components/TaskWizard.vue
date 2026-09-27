@@ -8,7 +8,7 @@ import {
   type ClassificationResult,
 } from "../types";
 
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; "open-settings": [] }>();
 const { classifyTask, createTask, settings, recordQuadrantCorrection } = useTasks();
 
 type Step = "title" | "content" | "importance" | "urgency" | "context" | "confirm";
@@ -186,7 +186,7 @@ function submit() {
             <span class="head-sub">AI 对话式创建</span>
           </div>
         </div>
-        <button class="close-btn" @click="emit('close')">
+        <button class="close-btn" aria-label="关闭" @click="emit('close')">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
             <path d="M3 3l8 8M11 3l-8 8"/>
           </svg>
@@ -195,7 +195,7 @@ function submit() {
 
       <!-- No API key warning -->
       <div v-if="!settings.api_key_configured" class="key-warn">
-        ⚠ 尚未配置 API Key，AI 分析不可用。<a href="javascript:void(0)" @click.prevent="emit('close')">去设置</a>
+        ⚠ 尚未配置 API Key，AI 分析不可用。<button class="link" @click="emit('open-settings')">去设置</button>
       </div>
 
       <!-- Chat -->
@@ -336,10 +336,11 @@ h3 {
   color: var(--warning);
   font-size: 12px;
 }
-.key-warn a {
+.key-warn .link {
   color: var(--warning);
   font-weight: 600;
   text-decoration: underline;
+  padding: 0;
 }
 .chat {
   flex: 1;

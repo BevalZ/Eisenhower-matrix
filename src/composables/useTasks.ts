@@ -8,6 +8,10 @@ import {
   type Quadrant, type WebdavConfig, type SyncResult, type LearningStats,
   type TailscaleStatus, type PeerSyncStatus,
 } from "../types";
+import { compareTasks, type TaskMove } from "../ordering";
+import { useToast } from "./useToast";
+
+const toast = useToast();
 
 interface QuadrantCorrection {
   taskTitle: string;
@@ -62,20 +66,40 @@ async function toggleTaskDone(id: number) {
   task.completed_at = task.done ? Date.now() : null;
   try {
     await invoke("toggle_task_done", { id });
-  } catch {
+  } catch (err) {
     task.done = prevDone;
     task.completed_at = prevCompleted;
+    toast.showError("更新任务失败", err);
   }
 }
 
+function shortTitle(title: string) {
+  return title.length > 16 ? `${title.slice(0, 16)}…` : title;
+}
+
 async function deleteTask(id: number) {
-  // Optimistic: remove locally
+  // Optimistic: remove locally, offer undo (deletion is a tombstone, so it can be restored)
   const idx = tasks.value.findIndex((t) => t.id === id);
-  if (idx >= 0) tasks.value.splice(idx, 1);
+  if (idx < 0) return;
+  const [removed] = tasks.value.splice(idx, 1);
   try {
     await invoke("delete_task", { id });
-  } catch {
-    await loadTasks(); // Reload on failure
+  } catch (err) {
+    tasks.value.splice(Math.min(idx, tasks.value.length), 0, removed);
+    toast.showError("删除失败", err);
+    return;
+  }
+  toast.show(`已删除「${shortTitle(removed.title)}」`, {
+    action: { label: "撤销", run: () => restoreTasks([id]) },
+  });
+}
+
+async function restoreTasks(ids: number[]) {
+  try {
+    await invoke<number>("restore_tasks", { ids });
+    await loadTasks({ quiet: true });
+  } catch (err) {
+    toast.showError("撤销失败", err);
   }
 }
 
@@ -83,33 +107,64 @@ function recordQuadrantCorrection(input: QuadrantCorrection) {
   invoke("record_feedback", { ...input }).catch(() => {});
 }
 
-async function moveTask(id: number, quadrant: Quadrant, priority: number) {
-  const task = tasks.value.find((t) => t.id === id);
-  if (!task) return;
-  const prevQuadrant = task.quadrant;
-  const prevPriority = task.priority;
-  const scoresMatchOrigin =
-    quadrantFromScores(task.importance_score, task.urgency_score) === prevQuadrant;
-  task.quadrant = quadrant;
-  task.priority = priority;
-  try {
-    await invoke("move_task", { id, quadrant, priority });
-    if (scoresMatchOrigin && prevQuadrant !== quadrant) {
-      const user = scoresForQuadrant(task.importance_score, task.urgency_score, quadrant);
-      recordQuadrantCorrection({
-        taskTitle: task.title,
-        aiImportance: task.importance_score,
-        aiUrgency: task.urgency_score,
-        aiQuadrant: prevQuadrant,
-        userImportance: user.importance,
-        userUrgency: user.urgency,
-        userQuadrant: quadrant,
-      });
-    }
-  } catch {
-    task.quadrant = prevQuadrant;
-    task.priority = prevPriority;
+/**
+ * Apply a drag/keyboard move. The local update happens synchronously so the board
+ * re-renders in the same tick; all rows are saved in one transaction.
+ */
+async function reorderTasks(moves: TaskMove[]) {
+  const changes = moves.flatMap((move) => {
+    const task = tasks.value.find((t) => t.id === move.id);
+    return task ? [{ task, move, prevQuadrant: task.quadrant, prevPriority: task.priority }] : [];
+  });
+  if (!changes.length) return;
+  for (const { task, move } of changes) {
+    task.quadrant = move.quadrant;
+    task.priority = move.priority;
   }
+  try {
+    await invoke("reorder_tasks", { moves: changes.map((c) => c.move) });
+  } catch (err) {
+    for (const { task, prevQuadrant, prevPriority } of changes) {
+      task.quadrant = prevQuadrant;
+      task.priority = prevPriority;
+    }
+    toast.showError("移动失败，已恢复原位置", err);
+    return;
+  }
+  // AI learning: a first move out of the AI-chosen quadrant counts as a correction.
+  for (const { task, move, prevQuadrant } of changes) {
+    if (move.quadrant === prevQuadrant) continue;
+    if (quadrantFromScores(task.importance_score, task.urgency_score) !== prevQuadrant) continue;
+    const user = scoresForQuadrant(task.importance_score, task.urgency_score, move.quadrant);
+    recordQuadrantCorrection({
+      taskTitle: task.title,
+      aiImportance: task.importance_score,
+      aiUrgency: task.urgency_score,
+      aiQuadrant: prevQuadrant,
+      userImportance: user.importance,
+      userUrgency: user.urgency,
+      userQuadrant: move.quadrant,
+    });
+  }
+}
+
+// Remote sync refreshes are deferred while a card is being dragged,
+// otherwise a reload could swap the list out from under the pointer.
+let refreshHolds = 0;
+let refreshPending = false;
+
+function holdRemoteRefresh(): () => void {
+  refreshHolds++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    refreshHolds--;
+    if (refreshHolds === 0 && refreshPending) {
+      refreshPending = false;
+      void loadTasks({ quiet: true }).catch(() => {});
+    }
+  };
 }
 
 async function getLearningStats(): Promise<LearningStats> {
@@ -117,12 +172,20 @@ async function getLearningStats(): Promise<LearningStats> {
 }
 
 async function clearDone() {
-  // Optimistic: remove done tasks
+  if (!tasks.value.some((t) => t.done)) {
+    toast.show("没有已完成的任务");
+    return;
+  }
+  // Optimistic: remove done tasks, offer undo
   tasks.value = tasks.value.filter((t) => !t.done);
   try {
-    await invoke("clear_done_tasks");
-  } catch {
-    await loadTasks();
+    const ids = await invoke<number[]>("clear_done_tasks");
+    toast.show(`已清除 ${ids.length} 个已完成任务`, {
+      action: { label: "撤销", run: () => restoreTasks(ids) },
+    });
+  } catch (err) {
+    toast.showError("清除失败", err);
+    await loadTasks({ quiet: true }).catch(() => {});
   }
 }
 
@@ -192,12 +255,7 @@ async function syncAllPeers(): Promise<SyncResult> {
   return result;
 }
 
-const sortedTasks = computed(() => {
-  return [...tasks.value].sort((a, b) => {
-    if (a.done !== b.done) return a.done ? 1 : -1;
-    return b.priority - a.priority;
-  });
-});
+const sortedTasks = computed(() => [...tasks.value].sort(compareTasks));
 
 function tasksByQuadrant(q: Quadrant): Task[] {
   return sortedTasks.value.filter((t) => t.quadrant === q);
@@ -209,6 +267,10 @@ function watchRemoteTasks() {
   if (remoteWatchStarted) return;
   remoteWatchStarted = true;
   void listen("tasks-changed", () => {
+    if (refreshHolds > 0) {
+      refreshPending = true;
+      return;
+    }
     void loadTasks({ quiet: true }).catch(() => {});
   });
 }
@@ -226,7 +288,9 @@ export function useTasks() {
     createTask,
     toggleTaskDone,
     deleteTask,
-    moveTask,
+    restoreTasks,
+    reorderTasks,
+    holdRemoteRefresh,
     recordQuadrantCorrection,
     getLearningStats,
     clearDone,

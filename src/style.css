@@ -41,6 +41,13 @@
   --q4-light: rgba(134, 144, 156, 0.06);
   --q4-border: rgba(134, 144, 156, 0.3);
 
+  /* Misc surfaces */
+  --scrollbar: #c9cdd4;
+  --scrollbar-hover: #a9aeb8;
+  --skeleton-shine: #eef0f3;
+  --toast-bg: #1d2129;
+  --toast-action: #9db1ff;
+
   /* Elevation */
   --radius-sm: 6px;
   --radius: 10px;
@@ -83,12 +90,22 @@
 
   --q1: #ff6b6b;
   --q1-light: rgba(255, 107, 107, 0.1);
+  --q1-border: rgba(255, 107, 107, 0.35);
   --q2: #6b8afd;
   --q2-light: rgba(107, 138, 253, 0.1);
+  --q2-border: rgba(107, 138, 253, 0.35);
   --q3: #ffa940;
   --q3-light: rgba(255, 169, 64, 0.1);
+  --q3-border: rgba(255, 169, 64, 0.35);
   --q4: #8c8c8c;
   --q4-light: rgba(140, 140, 140, 0.1);
+  --q4-border: rgba(140, 140, 140, 0.35);
+
+  --scrollbar: #4a505c;
+  --scrollbar-hover: #5c6370;
+  --skeleton-shine: #353a44;
+  --toast-bg: #3a3f4a;
+  --toast-action: #a8bbff;
 
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
@@ -140,11 +157,11 @@ select {
   height: 6px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #c9cdd4;
+  background: var(--scrollbar);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #a9aeb8;
+  background: var(--scrollbar-hover);
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -262,10 +279,46 @@ textarea {
   background: linear-gradient(
     90deg,
     var(--surface-2) 25%,
-    #eef0f3 50%,
+    var(--skeleton-shine) 50%,
     var(--surface-2) 75%
   );
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
   border-radius: var(--radius-sm);
+}
+
+/* Screen-reader only text */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* While a card is being dragged */
+html.board-dragging,
+html.board-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+html.board-dragging .task-card:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
