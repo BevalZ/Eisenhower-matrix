@@ -5,6 +5,7 @@
   "windows": ["main", "floating-ball"],
   "permissions": [
     "core:default",
-    "core:window:default"
+    "core:window:default",
+    "opener:default"
   ]
 }

@@ -6,7 +6,7 @@ import type { PeerSyncStatus, TailscaleStatus, WebdavConfig } from "../types";
 const emit = defineEmits<{ close: [] }>();
 const {
   settings, saveApiKey, loadSettings, loadTasks,
-  setTheme, exportData, importData,
+  setTheme, exportToFile, importData,
   saveWebdav, getWebdavConfig, syncToWebdav, restoreFromWebdav,
   getTailscaleStatus, getPeerSyncStatus, savePeerSyncConfig,
   setPeerSyncListening, syncWithPeer, syncAllPeers,
@@ -71,14 +71,12 @@ async function switchTheme(t: string) {
 }
 
 async function doExport() {
-  const json = await exportData();
-  const blob = new Blob([json], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `eisenhower-backup-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  try {
+    const path = await exportToFile();
+    if (path) dataMsg.value = `已导出到 ${path}`;
+  } catch (err: any) {
+    dataMsg.value = `导出失败: ${err}`;
+  }
 }
 
 async function doImport(e: Event) {
@@ -272,7 +270,8 @@ async function doRestore() {
               <input v-model="key" :type="showKey ? 'text' : 'password'" placeholder="sk-..." />
               <button class="btn btn-ghost btn-sm" @click="showKey = !showKey">显示</button>
             </div>
-            <p class="hint">前往 <a href="https://dashboard.typesafe.ai" target="_blank">dashboard.typesafe.ai</a> 获取 Key。</p>
+            <p class="hint">前往 <a href="https://dashboard.typesafe.ai" target="_blank" rel="noopener">dashboard.typesafe.ai</a> 获取 Key。Key 保存在系统凭据管理器中。</p>
+            <p class="hint">隐私提示：AI 分类会把你在向导里填写的任务内容发送给 TypeSafe AI；快速添加和手动选象限不会联网。</p>
             <div class="status" :class="settings.api_key_configured ? 'ok' : 'warn'">
               <span class="dot"></span>{{ settings.api_key_configured ? "AI 分析已启用" : "未配置，AI 分析不可用" }}
             </div>

@@ -229,6 +229,11 @@ async function exportData(): Promise<string> {
   return await invoke<string>("export_data");
 }
 
+/** Native save dialog; resolves to the saved path, or null if cancelled. */
+async function exportToFile(): Promise<string | null> {
+  return await invoke<string | null>("export_to_file");
+}
+
 async function importData(json: string): Promise<number> {
   const count = await invoke<number>("import_data", { json });
   await loadTasks();
@@ -326,6 +331,7 @@ export function useTasks() {
     setTheme,
     applyTheme,
     exportData,
+    exportToFile,
     importData,
     saveWebdav,
     getWebdavConfig,

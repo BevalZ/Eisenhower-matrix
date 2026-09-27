@@ -1,6 +1,7 @@
 mod models;
 mod db;
 mod jevai;
+mod secrets;
 mod webdav;
 mod sync;
 
@@ -65,11 +66,10 @@ fn get_stats(state: tauri::State<AppState>) -> Result<StatsSummary, String> {
 
 #[tauri::command]
 fn get_settings(state: tauri::State<AppState>) -> Result<Settings, String> {
-    let api_key = state.db.get_api_key()?;
     let theme = state.db.get_setting("theme")?.unwrap_or_else(|| "light".into());
     let webdav_url = state.db.get_setting("webdav_url")?;
     Ok(Settings {
-        api_key_configured: api_key.is_some(),
+        api_key_configured: secrets::is_set(&state.db, secrets::API_KEY)?,
         theme,
         webdav_configured: webdav_url.is_some(),
     })
@@ -77,7 +77,11 @@ fn get_settings(state: tauri::State<AppState>) -> Result<Settings, String> {
 
 #[tauri::command]
 fn set_api_key(key: String, state: tauri::State<AppState>) -> Result<(), String> {
-    state.db.set_api_key(&key)
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("API Key 不能为空".into());
+    }
+    secrets::set(&state.db, secrets::API_KEY, key)
 }
 
 #[tauri::command]
@@ -98,7 +102,7 @@ fn save_webdav(config: WebdavConfig, state: tauri::State<AppState>) -> Result<()
     if config.password.is_empty() {
         return Ok(());
     }
-    state.db.set_setting("webdav_password", &config.password)
+    secrets::set(&state.db, secrets::WEBDAV_PASSWORD, &config.password)
 }
 
 #[tauri::command]
@@ -106,10 +110,7 @@ fn get_webdav_config(state: tauri::State<AppState>) -> Result<WebdavInfo, String
     Ok(WebdavInfo {
         url: state.db.get_setting("webdav_url")?.unwrap_or_default(),
         username: state.db.get_setting("webdav_username")?.unwrap_or_default(),
-        has_password: state
-            .db
-            .get_setting("webdav_password")?
-            .is_some_and(|p| !p.is_empty()),
+        has_password: secrets::is_set(&state.db, secrets::WEBDAV_PASSWORD)?,
     })
 }
 
@@ -120,7 +121,7 @@ async fn classify_task(
     description: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<ClassificationResult, String> {
-    let api_key = state.db.get_api_key()?.ok_or(
+    let api_key = secrets::get(&state.db, secrets::API_KEY)?.ok_or(
         "尚未配置 API Key，请先在设置中填入 TypeSafe AI API Key",
     )?;
     let (imp_bias, urg_bias) = state.db.get_calibration_bias()?;
@@ -184,6 +185,30 @@ fn export_data(state: tauri::State<AppState>) -> Result<String, String> {
     state.db.export_all()
 }
 
+/// Save a JSON backup through the native save dialog. Blob downloads are not reliable in
+/// every platform WebView. Returns the chosen path, or None if the user cancelled.
+#[tauri::command]
+async fn export_to_file(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let json = state.db.export_all()?;
+    let name = format!("eisenhower-backup-{}.json", chrono::Local::now().format("%Y-%m-%d"));
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("JSON", &["json"])
+        .set_file_name(name)
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("写入文件失败: {e}"))?;
+    Ok(Some(path.display().to_string()))
+}
+
 #[tauri::command]
 fn import_data(json: String, state: tauri::State<AppState>) -> Result<usize, String> {
     state.db.import_all(&json)
@@ -195,7 +220,7 @@ fn import_data(json: String, state: tauri::State<AppState>) -> Result<usize, Str
 async fn sync_to_webdav(state: tauri::State<'_, AppState>) -> Result<SyncResult, String> {
     let url = state.db.get_setting("webdav_url")?.ok_or("未配置 WebDAV")?;
     let username = state.db.get_setting("webdav_username")?.unwrap_or_default();
-    let password = state.db.get_setting("webdav_password")?.unwrap_or_default();
+    let password = secrets::get(&state.db, secrets::WEBDAV_PASSWORD)?.unwrap_or_default();
     let backup = state.db.export_all()?;
     let count = webdav::upload(&url, &username, &password, &backup).await?;
     Ok(SyncResult {
@@ -209,7 +234,7 @@ async fn sync_to_webdav(state: tauri::State<'_, AppState>) -> Result<SyncResult,
 async fn restore_from_webdav(state: tauri::State<'_, AppState>) -> Result<SyncResult, String> {
     let url = state.db.get_setting("webdav_url")?.ok_or("未配置 WebDAV")?;
     let username = state.db.get_setting("webdav_username")?.unwrap_or_default();
-    let password = state.db.get_setting("webdav_password")?.unwrap_or_default();
+    let password = secrets::get(&state.db, secrets::WEBDAV_PASSWORD)?.unwrap_or_default();
     let json = webdav::download(&url, &username, &password).await?;
     let count = state.db.import_all(&json)?;
     Ok(SyncResult {
@@ -336,6 +361,8 @@ fn sync_message(applied: usize) -> SyncResult {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             db: Arc::new(Db::open().expect("failed to open database")),
             sync: Arc::new(SyncControl::new()),
@@ -359,6 +386,7 @@ pub fn run() {
             record_feedback,
             get_learning_stats,
             export_data,
+            export_to_file,
             import_data,
             sync_to_webdav,
             restore_from_webdav,
@@ -374,6 +402,9 @@ pub fn run() {
         .setup(|app| {
             sync::set_app(app.handle().clone());
             let state = app.state::<AppState>();
+            // Moving old plaintext secrets may wait on the OS keyring; keep it off the UI thread.
+            let db = Arc::clone(&state.db);
+            std::thread::spawn(move || secrets::migrate(&db));
             let enabled = state.db.get_setting("sync_listen").unwrap_or(None);
             if enabled.as_deref() == Some("1") {
                 let db = Arc::clone(&state.db);

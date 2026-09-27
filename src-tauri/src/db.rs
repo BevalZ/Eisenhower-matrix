@@ -83,31 +83,7 @@ impl Db {
 
     // ---- Settings ----
 
-    pub fn get_api_key(&self) -> Result<Option<String>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare("SELECT value FROM settings WHERE key = 'api_key'")
-            .map_err(|e| e.to_string())?;
-        let mut rows = stmt
-            .query(params![])
-            .map_err(|e| e.to_string())?;
-        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            Ok(Some(row.get(0).map_err(|e| e.to_string())?))
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub fn set_api_key(&self, key: &str) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('api_key', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    }
+    // API key / WebDAV password: see secrets.rs (OS credential store).
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -130,6 +106,13 @@ impl Db {
             params![key, value],
         )
         .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn delete_setting(&self, key: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
