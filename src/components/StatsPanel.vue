@@ -37,7 +37,15 @@ onUnmounted(() => {
 
 const quadrants: Quadrant[] = [1, 2, 3, 4];
 // Bars scale to the busiest day instead of capping at 4 tasks.
-const trendMax = computed(() => Math.max(1, ...(stats.value?.recent_completed.map((d) => d.count) ?? [])));
+const weekTotal = computed(() =>
+  stats.value ? quadrants.reduce((n, q) => n + (stats.value!.week_by_quadrant[q] ?? 0), 0) : 0,
+);
+const q2Share = computed(() =>
+  weekTotal.value ? Math.round(((stats.value?.week_by_quadrant[2] ?? 0) / weekTotal.value) * 100) : 0,
+);
+const q1Open = computed(() => (stats.value ? stats.value.by_quadrant[1].total - stats.value.by_quadrant[1].done : 0));
+const trendMax = computed(
+() => Math.max(1, ...(stats.value?.recent_completed.map((d) => d.count) ?? [])));
 </script>
 
 <template>
@@ -119,6 +127,28 @@ const trendMax = computed(() => Math.max(1, ...(stats.value?.recent_completed.ma
             <span class="trend-date">{{ d.date }}</span>
           </div>
         </div>
+      </div>
+
+      <!-- Weekly review -->
+      <div class="full review anim-slideUp" style="animation-delay: 0.46s;">
+        <h3>本周回顾</h3>
+        <p v-if="!weekTotal" class="review-line">最近 7 天还没有完成的任务。</p>
+        <template v-else>
+          <div class="share-bar" role="img" :aria-label="`本周完成 ${weekTotal} 个，按象限分布`">
+            <span
+              v-for="q in quadrants"
+              :key="q"
+              :style="{ width: (stats.week_by_quadrant[q] / weekTotal) * 100 + '%', background: QUADRANT_META[q].color }"
+              :title="`${QUADRANT_META[q].name}：${stats.week_by_quadrant[q]}`"
+            ></span>
+          </div>
+          <p class="review-line">
+            完成 {{ weekTotal }} 个，其中「重要不紧急」占 <strong>{{ q2Share }}%</strong>。
+            {{ q2Share >= 40 ? "大部分精力花在了真正重要的事上。" : "Q2 越多，救火就越少，可以多给它留时间。" }}
+          </p>
+        </template>
+        <p v-if="q1Open >= 5" class="review-line warn">「重要且紧急」里还有 {{ q1Open }} 个未完成任务，长期偏多说明一直在救火，试着把能提前规划的事放进 Q2。</p>
+        <p v-if="stats.overdue" class="review-line warn">有 {{ stats.overdue }} 个任务已过截止时间。</p>
       </div>
     </div>
   </div>
@@ -288,7 +318,27 @@ h3 {
   font-size: 11px;
   color: var(--text-muted);
 }
+.review {
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+.share-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--surface-2);
+  margin-bottom: 12px;
+}
+.share-bar span { height: 100%; transition: width var(--dur-slow) var(--ease); }
+.review-line { font-size: 13px; color: var(--text-secondary); line-height: 1.6; }
+.review-line + .review-line { margin-top: 6px; }
+.review-line.warn { color: var(--warning); }
 .loading-grid {
+
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 14px;

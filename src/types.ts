@@ -98,7 +98,10 @@ export interface StatsSummary {
   completion_rate: number;
   by_quadrant: Record<Quadrant, { total: number; done: number }>;
   recent_completed: { date: string; count: number }[];
+  week_by_quadrant: Record<Quadrant, number>;
+  overdue: number;
 }
+
 
 export interface FeedbackRecord {
   id: number;

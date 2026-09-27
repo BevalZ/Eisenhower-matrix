@@ -492,6 +492,28 @@ impl Db {
             });
         }
 
+        // Where last week's finished work came from (Q2 share = time spent on what matters).
+        let week_start = local_midnight_ms(today - chrono::Duration::days(6))?;
+        let mut week_by_quadrant = std::collections::HashMap::new();
+        for q in 1..=4i64 {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM tasks WHERE done = 1 AND quadrant = ?1 AND completed_at >= ?2",
+                    params![q, week_start],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            week_by_quadrant.insert(q, count);
+        }
+        let overdue: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tasks
+                 WHERE done = 0 AND deleted_at IS NULL AND due_at IS NOT NULL AND due_at < ?1",
+                params![Utc::now().timestamp_millis()],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+
         Ok(StatsSummary {
             total,
             done,
@@ -499,6 +521,8 @@ impl Db {
             completion_rate: rate,
             by_quadrant,
             recent_completed: recent,
+            week_by_quadrant,
+            overdue,
         })
     }
 
@@ -1092,7 +1116,24 @@ mod tests {
     }
 
     #[test]
+    fn weekly_stats_count_quadrants_and_overdue() {
+        let db = Db::open_in_memory().unwrap();
+        let q2 = db.create_task(&input("plan", 2, 50.0)).unwrap();
+        db.create_task(&input("fire", 1, 50.0)).unwrap();
+        let mut late = input("late", 3, 50.0);
+        late.due_at = Some(1_000);
+        db.create_task(&late).unwrap();
+        db.toggle_done(q2.id).unwrap();
+
+        let stats = db.get_stats().unwrap();
+        assert_eq!(stats.week_by_quadrant[&2], 1);
+        assert_eq!(stats.week_by_quadrant[&1], 0);
+        assert_eq!(stats.overdue, 1);
+    }
+
+    #[test]
     fn deleted_unfinished_tasks_leave_the_stats() {
+
         let db = Db::open_in_memory().unwrap();
         let t = db.create_task(&input("drop me", 4, 20.0)).unwrap();
         db.delete_task(t.id).unwrap();

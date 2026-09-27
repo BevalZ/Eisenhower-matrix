@@ -198,7 +198,12 @@ pub struct StatsSummary {
     pub completion_rate: f64,
     pub by_quadrant: std::collections::HashMap<i64, QuadrantStat>,
     pub recent_completed: Vec<DailyCount>,
+    /// Completions in the last 7 local days, per quadrant (keys 1-4).
+    pub week_by_quadrant: std::collections::HashMap<i64, i64>,
+    /// Unfinished tasks past their deadline.
+    pub overdue: i64,
 }
+
 
 #[derive(Debug, Serialize)]
 pub struct DailyCount {
