@@ -274,12 +274,28 @@ async fn sync_to_webdav(state: tauri::State<'_, AppState>) -> Result<SyncResult,
     let url = state.db.get_setting("webdav_url")?.ok_or("未配置 WebDAV")?;
     let username = state.db.get_setting("webdav_username")?.unwrap_or_default();
     let password = secrets::get(&state.db, secrets::WEBDAV_PASSWORD)?.unwrap_or_default();
-    let backup = state.db.export_all()?;
-    let count = webdav::upload(&url, &username, &password, &backup).await?;
+    // Download → merge by uid (last write wins) → upload the merged result, so two
+    // devices sharing one WebDAV file don't overwrite each other.
+    let remote = webdav::download(&url, &username, &password).await?;
+    let (incoming, schema) = db::parse_webdav_payload(remote.as_deref())?;
+    let applied = state.db.merge_remote(&incoming, schema)?;
+    let tasks = state.db.sync_snapshot()?;
+    let uploaded = tasks.iter().filter(|t| t.deleted_at.is_none()).count();
+    let envelope = SyncEnvelope {
+        device_id: state.db.device_id()?,
+        tasks,
+        schema: SYNC_SCHEMA,
+    };
+    let body = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
+    webdav::upload(&url, &username, &password, body).await?;
     Ok(SyncResult {
         success: true,
-        message: format!("已同步 {} 个任务到 WebDAV", count),
-        task_count: count,
+        message: if remote.is_none() {
+            format!("WebDAV 上还没有数据，已上传 {uploaded} 个任务")
+        } else {
+            format!("同步完成：本机更新了 {applied} 条，上传了 {uploaded} 个任务")
+        },
+        task_count: applied,
     })
 }
 
@@ -288,8 +304,10 @@ async fn restore_from_webdav(state: tauri::State<'_, AppState>) -> Result<SyncRe
     let url = state.db.get_setting("webdav_url")?.ok_or("未配置 WebDAV")?;
     let username = state.db.get_setting("webdav_username")?.unwrap_or_default();
     let password = secrets::get(&state.db, secrets::WEBDAV_PASSWORD)?.unwrap_or_default();
-    let json = webdav::download(&url, &username, &password).await?;
-    let count = state.db.import_all(&json)?;
+    let json = webdav::download(&url, &username, &password)
+        .await?
+        .ok_or("WebDAV 上还没有备份文件")?;
+    let count = state.db.restore_webdav(&json)?;
     Ok(SyncResult {
         success: true,
         message: format!("已从 WebDAV 恢复 {} 个任务", count),

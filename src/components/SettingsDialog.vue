@@ -232,7 +232,7 @@ async function syncPeers() {
 }
 
 async function doRestore() {
-  if (!confirm("将用 WebDAV 备份覆盖本地任务，确定继续？")) return;
+  if (!confirm("「恢复」会丢弃本机所有任务，完全替换为 WebDAV 上的版本（日常同步请用「与 WebDAV 同步」）。确定继续？")) return;
   syncing.value = true;
   syncMsg.value = "";
   try {
@@ -368,10 +368,10 @@ async function doRestore() {
             <label class="section-label">同步操作</label>
             <div class="sync-row">
               <button class="btn btn-ghost" :disabled="syncing" @click="doSync">
-                {{ syncing ? "同步中…" : "↑ 上传到 WebDAV" }}
+                {{ syncing ? "同步中…" : "⇅ 与 WebDAV 同步" }}
               </button>
               <button class="btn btn-ghost" :disabled="syncing" @click="doRestore">
-                {{ syncing ? "恢复中…" : "↓ 从 WebDAV 恢复" }}
+                {{ syncing ? "恢复中…" : "↓ 用 WebDAV 覆盖本机" }}
               </button>
             </div>
             <p v-if="syncMsg" class="sync-msg">{{ syncMsg }}</p>

@@ -25,7 +25,7 @@
 | 🌗 **双主题** | 浅色 / 深色一键切换，自动记忆偏好 |
 | 📈 **数据统计** | 完成率、各象限分布、近 7 天完成趋势 |
 | 📤 **导入导出** | JSON 备份导出与导入恢复，跨设备迁移 |
-| ☁️ **WebDAV 同步** | 备份上传至任意 WebDAV 服务器（Nextcloud / ownCloud 等） |
+| ☁️ **WebDAV 同步** | 多台设备通过任意 WebDAV 服务器（Nextcloud / ownCloud / 坚果云等）合并同步 |
 | 🔁 **Tailscale 多端同步** | 同一 tailnet 内按任务直连合并，不经过额外服务器 |
 | 💾 **本地存储** | SQLite 本地持久化，同步只发生在你自己的 Tailscale 网络 |
 | ⚡ **轻量** | Tauri 构建，安装包 < 10 MB，启动秒开 |
@@ -136,7 +136,7 @@ npm run tauri build
 - **服务器地址**：完整的备份文件路径，如 `https://dav.example.com/eisenhower/backup.json`
 - **用户名 / 密码**：WebDAV 凭证
 
-点击「上传到 WebDAV」备份，「从 WebDAV 恢复」还原。
+点击「与 WebDAV 同步」：先下载远端文件，按任务逐条合并（规则同下文 Tailscale 同步），再把合并结果上传，多台设备轮流同步不会互相覆盖。首次同步时远端文件不存在也没关系。「用 WebDAV 覆盖本机」会丢弃本机任务、完全替换为远端版本，仅用于恢复；旧版本上传的备份文件同样能读取。
 
 ### Tailscale 多端同步
 

@@ -131,6 +131,46 @@ impl Db {
 
     pub fn import_all(&self, json: &str) -> Result<usize, String> {
         let backup: BackupData = serde_json::from_str(json).map_err(|e| format!("JSON 解析失败: {}", e))?;
+        self.import_backup(&backup)
+    }
+
+    /// Overwrites local tasks with a WebDAV file in either format (see `parse_webdav_payload`).
+    /// Tombstones are kept so a later merge can't resurrect deleted tasks. Returns visible tasks.
+    pub fn restore_webdav(&self, json: &str) -> Result<usize, String> {
+        let backup = match serde_json::from_str::<SyncEnvelope>(json) {
+            Ok(envelope) => BackupData {
+                version: 2,
+                exported_at: Utc::now().timestamp_millis(),
+                tasks: envelope
+                    .tasks
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, t)| BackupTask {
+                        id: i as i64 + 1,
+                        title: t.title,
+                        description: t.description,
+                        quadrant: t.quadrant,
+                        priority: t.priority,
+                        importance_score: t.importance_score,
+                        urgency_score: t.urgency_score,
+                        done: t.done,
+                        created_at: t.created_at,
+                        completed_at: t.completed_at,
+                        uid: t.uid,
+                        updated_at: t.updated_at,
+                        updated_by: t.updated_by,
+                        deleted_at: t.deleted_at,
+                        due_at: t.due_at,
+                    })
+                    .collect(),
+            },
+            Err(_) => serde_json::from_str(json).map_err(|e| format!("WebDAV 文件解析失败: {}", e))?,
+        };
+        self.import_backup(&backup)?;
+        Ok(backup.tasks.iter().filter(|t| t.deleted_at.is_none()).count())
+    }
+
+    fn import_backup(&self, backup: &BackupData) -> Result<usize, String> {
         if backup.version != 1 && backup.version != 2 {
             return Err(format!("不支持的备份版本: {}", backup.version));
         }
@@ -865,6 +905,43 @@ fn sync_tasks(conn: &Connection) -> Result<Vec<SyncTask>, String> {
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// Reads a WebDAV file for merging: `None` (file missing) is an empty remote, a
+/// `SyncEnvelope` is used as-is, and a legacy `BackupData` upload is merged at
+/// schema 0 because older builds may not have written `due_at`. Legacy tasks
+/// without a uid can't be matched to local ones and are skipped.
+pub fn parse_webdav_payload(json: Option<&str>) -> Result<(Vec<SyncTask>, u32), String> {
+    let Some(json) = json else {
+        return Ok((Vec::new(), SYNC_SCHEMA));
+    };
+    if let Ok(envelope) = serde_json::from_str::<SyncEnvelope>(json) {
+        return Ok((envelope.tasks, envelope.schema));
+    }
+    let backup: BackupData =
+        serde_json::from_str(json).map_err(|e| format!("WebDAV 文件解析失败: {}", e))?;
+    let tasks = backup
+        .tasks
+        .into_iter()
+        .filter(|t| !t.uid.trim().is_empty())
+        .map(|t| SyncTask {
+            uid: t.uid.trim().to_string(),
+            title: t.title,
+            description: t.description,
+            quadrant: t.quadrant,
+            priority: t.priority,
+            importance_score: t.importance_score,
+            urgency_score: t.urgency_score,
+            done: t.done,
+            created_at: t.created_at,
+            completed_at: t.completed_at,
+            updated_at: if t.updated_at > 0 { t.updated_at } else { t.created_at },
+            updated_by: t.updated_by,
+            deleted_at: t.deleted_at,
+            due_at: t.due_at,
+        })
+        .collect();
+    Ok((tasks, 0))
+}
+
 fn read_sync_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncTask> {
     Ok(SyncTask {
         uid: row.get(0)?,
@@ -1198,6 +1275,114 @@ mod tests {
         remote.updated_at += 10;
         db.merge_remote(&[remote], SYNC_SCHEMA).unwrap();
         assert_eq!(db.get_tasks().unwrap()[0].due_at, None);
+    }
+
+    /// One WebDAV round as `sync_to_webdav` does it, with `file` standing in for the server.
+    fn webdav_round(db: &Db, file: &mut Option<String>) -> usize {
+        let (incoming, schema) = parse_webdav_payload(file.as_deref()).unwrap();
+        let applied = db.merge_remote(&incoming, schema).unwrap();
+        let envelope = SyncEnvelope {
+            device_id: db.device_id().unwrap(),
+            tasks: db.sync_snapshot().unwrap(),
+            schema: SYNC_SCHEMA,
+        };
+        *file = Some(serde_json::to_string(&envelope).unwrap());
+        applied
+    }
+
+    fn titles(db: &Db) -> Vec<String> {
+        let mut t: Vec<String> = db.get_tasks().unwrap().into_iter().map(|t| t.title).collect();
+        t.sort();
+        t
+    }
+
+    #[test]
+    fn webdav_sync_merges_instead_of_overwriting() {
+        let a = Db::open_in_memory().unwrap();
+        let b = Db::open_in_memory().unwrap();
+        let mut file = None;
+
+        // Missing remote file is an empty remote, not an error.
+        a.create_task(&input("from a", 1, 50.0)).unwrap();
+        assert_eq!(webdav_round(&a, &mut file), 0);
+
+        // B has its own task; neither side loses anything.
+        b.create_task(&input("from b", 2, 50.0)).unwrap();
+        assert_eq!(webdav_round(&b, &mut file), 1);
+        assert_eq!(webdav_round(&a, &mut file), 1);
+        assert_eq!(titles(&a), vec!["from a", "from b"]);
+        assert_eq!(titles(&b), vec!["from a", "from b"]);
+    }
+
+    #[test]
+    fn webdav_sync_keeps_newest_edit_and_tombstones() {
+        let a = Db::open_in_memory().unwrap();
+        let b = Db::open_in_memory().unwrap();
+        let mut file = None;
+        a.create_task(&input("shared", 1, 50.0)).unwrap();
+        a.create_task(&input("doomed", 1, 40.0)).unwrap();
+        webdav_round(&a, &mut file);
+        webdav_round(&b, &mut file);
+
+        // Both edit "shared"; B's edit is newer. A deletes "doomed".
+        let mut snap = a.sync_snapshot().unwrap();
+        snap.sort_by(|x, y| x.title.cmp(&y.title));
+        let (mut doomed, mut shared) = (snap[0].clone(), snap[1].clone());
+        shared.title = "old edit on a".into();
+        shared.updated_at += 10;
+        a.merge_remote(&[shared.clone()], SYNC_SCHEMA).unwrap();
+        shared.title = "new edit on b".into();
+        shared.updated_at += 10;
+        b.merge_remote(&[shared], SYNC_SCHEMA).unwrap();
+        doomed.deleted_at = Some(doomed.updated_at + 10);
+        doomed.updated_at += 10;
+        a.merge_remote(&[doomed], SYNC_SCHEMA).unwrap();
+
+        webdav_round(&a, &mut file);
+        webdav_round(&b, &mut file);
+        webdav_round(&a, &mut file);
+        assert_eq!(titles(&a), vec!["new edit on b"]);
+        assert_eq!(titles(&b), vec!["new edit on b"]);
+    }
+
+    #[test]
+    fn webdav_legacy_backup_merges_without_clearing_due_dates() {
+        let db = Db::open_in_memory().unwrap();
+        let mut due = input("due", 1, 50.0);
+        due.due_at = Some(1_900_000_000_000);
+        db.create_task(&due).unwrap();
+
+        // An old build uploaded BackupData (no schema, no due_at) with a newer title.
+        let mut legacy: serde_json::Value = serde_json::from_str(&db.export_all().unwrap()).unwrap();
+        let task = &mut legacy["tasks"][0];
+        task["title"] = "edited on old build".into();
+        task["updated_at"] = (task["updated_at"].as_i64().unwrap() + 10).into();
+        task.as_object_mut().unwrap().remove("due_at");
+        let legacy = legacy.to_string();
+
+        let (incoming, schema) = parse_webdav_payload(Some(&legacy)).unwrap();
+        assert_eq!(schema, 0);
+        db.merge_remote(&incoming, schema).unwrap();
+        let t = db.get_tasks().unwrap().remove(0);
+        assert_eq!((t.title.as_str(), t.due_at), ("edited on old build", Some(1_900_000_000_000)));
+
+        // Restore still accepts the legacy format.
+        assert_eq!(db.restore_webdav(&legacy).unwrap(), 1);
+    }
+
+    #[test]
+    fn webdav_restore_keeps_tombstones() {
+        let a = Db::open_in_memory().unwrap();
+        let t = a.create_task(&input("gone", 1, 50.0)).unwrap();
+        a.create_task(&input("kept", 1, 40.0)).unwrap();
+        a.delete_task(t.id).unwrap();
+        let mut file = None;
+        webdav_round(&a, &mut file);
+
+        let b = Db::open_in_memory().unwrap();
+        assert_eq!(b.restore_webdav(file.as_deref().unwrap()).unwrap(), 1);
+        assert_eq!(titles(&b), vec!["kept"]);
+        assert_eq!(b.sync_snapshot().unwrap().len(), 2);
     }
 
 }

@@ -256,7 +256,9 @@ async function getWebdavConfig(): Promise<WebdavInfo> {
 }
 
 async function syncToWebdav(): Promise<SyncResult> {
-  return await invoke<SyncResult>("sync_to_webdav");
+  const result = await invoke<SyncResult>("sync_to_webdav");
+  await loadTasks();
+  return result;
 }
 
 async function restoreFromWebdav(): Promise<SyncResult> {

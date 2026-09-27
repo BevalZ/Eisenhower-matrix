@@ -1,5 +1,3 @@
-use crate::models::*;
-
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub fn validate_url(url: &str) -> Result<(), String> {
@@ -25,34 +23,39 @@ fn client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("无法创建网络客户端: {}", e))
 }
 
-/// Upload tasks backup to WebDAV server.
-pub async fn upload(
-    url: &str,
-    username: &str,
-    password: &str,
-    backup_json: &str,
-) -> Result<usize, String> {
+fn status_error(status: reqwest::StatusCode) -> String {
+    let hint = match status.as_u16() {
+        401 | 403 => "，请检查账号和密码（坚果云等服务需使用「应用专用密码」，不是登录密码）",
+        404 | 409 => "，请确认地址中的文件夹已在网盘里创建",
+        301 | 302 | 307 | 308 => "，服务器要求跳转，请填写最终地址（常见于 http 应改为 https）",
+        507 => "，网盘空间不足",
+        500..=599 => "，服务器暂时出错，请稍后再试",
+        _ => "",
+    };
+    format!("WebDAV 返回错误: {}{}", status, hint)
+}
+
+/// Upload a sync payload to the WebDAV server.
+pub async fn upload(url: &str, username: &str, password: &str, body: String) -> Result<(), String> {
     validate_url(url)?;
     let client = client()?;
     let resp = client
         .put(url.trim())
         .basic_auth(username, Some(password))
         .header("Content-Type", "application/json")
-        .body(backup_json.to_string())
+        .body(body)
         .send()
         .await
         .map_err(|e| format!("WebDAV 连接失败: {}", e))?;
 
     if !resp.status().is_success() {
-        return Err(format!("WebDAV 返回错误: {}", resp.status()));
+        return Err(status_error(resp.status()));
     }
-    let tasks: BackupData = serde_json::from_str(backup_json)
-        .map_err(|e| format!("本地备份解析失败: {}", e))?;
-    Ok(tasks.tasks.len())
+    Ok(())
 }
 
-/// Download tasks backup from WebDAV server.
-pub async fn download(url: &str, username: &str, password: &str) -> Result<String, String> {
+/// Download the payload from the WebDAV server; `None` if the file doesn't exist yet.
+pub async fn download(url: &str, username: &str, password: &str) -> Result<Option<String>, String> {
     validate_url(url)?;
     let client = client()?;
     let resp = client
@@ -62,8 +65,11 @@ pub async fn download(url: &str, username: &str, password: &str) -> Result<Strin
         .await
         .map_err(|e| format!("WebDAV 连接失败: {}", e))?;
 
-    if !resp.status().is_success() {
-        return Err(format!("WebDAV 返回错误: {}", resp.status()));
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
     }
-    resp.text().await.map_err(|e| e.to_string())
+    if !resp.status().is_success() {
+        return Err(status_error(resp.status()));
+    }
+    resp.text().await.map(Some).map_err(|e| e.to_string())
 }
