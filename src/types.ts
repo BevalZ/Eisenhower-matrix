@@ -11,6 +11,7 @@ export interface Task {
   done: boolean;
   created_at: number; // unix timestamp (ms)
   completed_at: number | null;
+  due_at: number | null; // deadline, unix ms
 }
 
 export interface TaskInput {
@@ -20,6 +21,7 @@ export interface TaskInput {
   priority: number;
   importance_score: number;
   urgency_score: number;
+  due_at?: number | null;
 }
 
 export interface TaskUpdate {
@@ -28,7 +30,9 @@ export interface TaskUpdate {
   description: string;
   quadrant: Quadrant;
   priority: number;
+  due_at: number | null;
 }
+
 
 export interface ClassificationResult {
   quadrant: Quadrant;

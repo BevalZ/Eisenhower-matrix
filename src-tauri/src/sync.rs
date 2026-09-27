@@ -179,6 +179,7 @@ pub async fn exchange(db: &Db, ip: &str, port: u16) -> Result<usize, String> {
     let envelope = SyncEnvelope {
         device_id: db.device_id()?,
         tasks: db.sync_snapshot()?,
+        schema: SYNC_SCHEMA,
     };
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -207,7 +208,7 @@ pub async fn exchange(db: &Db, ip: &str, port: u16) -> Result<usize, String> {
         .json()
         .await
         .map_err(|e| format!("无法解析对方数据: {e}"))?;
-    let applied = db.merge_remote(&remote.tasks)?;
+    let applied = db.merge_remote(&remote.tasks, remote.schema)?;
     if applied > 0 {
         notify_tasks_changed();
     }
@@ -426,14 +427,16 @@ async fn dispatch(db: &Db, request: &HttpRequest) -> Result<String, String> {
     }
     let envelope: SyncEnvelope = serde_json::from_slice(&request.body)
         .map_err(|e| format!("JSON 解析失败: {e}"))?;
-    let applied = db.merge_remote(&envelope.tasks)?;
+    let applied = db.merge_remote(&envelope.tasks, envelope.schema)?;
     if applied > 0 {
         notify_tasks_changed();
     }
     let response = SyncEnvelope {
         device_id: db.device_id()?,
         tasks: db.sync_snapshot()?,
+        schema: SYNC_SCHEMA,
     };
+
     serde_json::to_string(&response).map_err(|e| e.to_string())
 }
 

@@ -12,6 +12,9 @@ pub struct Task {
     pub done: bool,
     pub created_at: i64,
     pub completed_at: Option<i64>,
+    /// Deadline (unix ms), if any.
+    #[serde(default)]
+    pub due_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -22,6 +25,8 @@ pub struct TaskInput {
     pub priority: f64,
     pub importance_score: f64,
     pub urgency_score: f64,
+    #[serde(default)]
+    pub due_at: Option<i64>,
 }
 
 /// Fields editable after creation.
@@ -32,6 +37,8 @@ pub struct TaskUpdate {
     pub description: String,
     pub quadrant: i64,
     pub priority: f64,
+    #[serde(default)]
+    pub due_at: Option<i64>,
 }
 
 /// One row of a drag-and-drop reorder: the task's new quadrant and priority.
@@ -94,6 +101,8 @@ pub struct BackupTask {
     pub updated_by: String,
     #[serde(default)]
     pub deleted_at: Option<i64>,
+    #[serde(default)]
+    pub due_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -118,12 +127,21 @@ pub struct SyncTask {
     pub updated_at: i64,
     pub updated_by: String,
     pub deleted_at: Option<i64>,
+    /// Missing from peers older than schema 1; see SyncEnvelope::schema.
+    #[serde(default)]
+    pub due_at: Option<i64>,
 }
+
+/// Sync payload schema. 0 = before due dates (field absent), 1 = has `due_at`.
+pub const SYNC_SCHEMA: u32 = 1;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SyncEnvelope {
     pub device_id: String,
     pub tasks: Vec<SyncTask>,
+    /// Old peers don't send this, so it defaults to 0.
+    #[serde(default)]
+    pub schema: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]

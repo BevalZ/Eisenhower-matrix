@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
 import { QUADRANT_META, type Quadrant, type Task } from "../types";
+import { fromLocalInput, toLocalInput } from "../due";
 import { useTasks } from "../composables/useTasks";
 
 const props = defineProps<{ task: Task }>();
@@ -12,6 +13,7 @@ const form = reactive({
   description: props.task.description,
   quadrant: props.task.quadrant as Quadrant,
   priority: Math.round(props.task.priority * 10) / 10,
+  due: toLocalInput(props.task.due_at),
 });
 const error = ref("");
 const saving = ref(false);
@@ -36,7 +38,14 @@ async function save() {
   saving.value = true;
   error.value = "";
   try {
-    await updateTask({ id: props.task.id, title, description: form.description.trim(), quadrant: form.quadrant, priority });
+    await updateTask({
+      id: props.task.id,
+      title,
+      description: form.description.trim(),
+      quadrant: form.quadrant,
+      priority,
+      due_at: fromLocalInput(form.due),
+    });
     emit("close");
   } catch (err) {
     error.value = `保存失败：${err}`;
@@ -82,6 +91,13 @@ async function save() {
       <label class="field">
         <span>优先级（0-100，决定象限内的顺序）</span>
         <input v-model.number="form.priority" type="number" min="0" max="100" step="1" />
+      </label>
+      <label class="field">
+        <span>截止时间（可选，临近时会提醒并建议移到紧急象限）</span>
+        <div class="due-row">
+          <input v-model="form.due" type="datetime-local" />
+          <button v-if="form.due" type="button" class="btn btn-ghost btn-sm" @click="form.due = ''">清除</button>
+        </div>
       </label>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <div class="actions">
@@ -142,5 +158,7 @@ legend { margin-bottom: 6px; }
 .pick-name { font-size: 13px; font-weight: 600; color: var(--q-color); }
 .pick-sub { font-size: 11px; color: var(--text-muted); }
 .error { font-size: 12px; color: var(--danger); }
+.due-row { display: flex; gap: 8px; align-items: center; }
+
 .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 </style>

@@ -7,6 +7,8 @@ import {
   type Quadrant,
   type ClassificationResult,
 } from "../types";
+import { fromLocalInput } from "../due";
+
 
 const emit = defineEmits<{ close: []; "open-settings": [] }>();
 const { classifyTask, createTask, settings, recordQuadrantCorrection } = useTasks();
@@ -38,6 +40,7 @@ const result = ref<ClassificationResult | null>(null);
 const aiClassified = ref(false);
 const manualQuadrant = ref<Quadrant>(1);
 const manualPriority = ref(50);
+const dueInput = ref("");
 
 async function scrollBottom() {
   await nextTick();
@@ -140,6 +143,7 @@ async function save() {
       priority,
       importance_score: ai?.importance_score ?? 2.5,
       urgency_score: ai?.urgency_score ?? 2.5,
+      due_at: fromLocalInput(dueInput.value),
     });
   } catch (err) {
     pushMsg("ai", `保存失败：${err}`);
@@ -254,7 +258,9 @@ function submit() {
             <option :value="4">{{ QUADRANT_META[4].name }}（{{ QUADRANT_META[4].subtitle }}）</option>
           </select>
           <label>优先级（0-100）</label>
-          <input type="text" v-model.number="manualPriority" />
+          <input type="number" min="0" max="100" step="1" v-model.number="manualPriority" />
+          <label>截止时间（可选）</label>
+          <input type="datetime-local" v-model="dueInput" />
         </div>
 
         <div class="actions">

@@ -25,6 +25,7 @@ function mk(id: number, priority: number, done = false, quadrant: Quadrant = 1):
     done,
     created_at: 0,
     completed_at: done ? 1 : null,
+    due_at: null,
   };
 }
 

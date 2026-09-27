@@ -2,8 +2,9 @@
 import { computed, ref } from "vue";
 import type { Quadrant, Task } from "../types";
 import { QUADRANT_META } from "../types";
+import { dueLabel, dueState, urgentTarget } from "../due";
 
-const props = defineProps<{ task: Task; ghost?: boolean }>();
+const props = defineProps<{ task: Task; ghost?: boolean; now?: number }>();
 const emit = defineEmits<{
   toggle: [id: number];
   remove: [id: number];
@@ -18,6 +19,15 @@ function onDblClick(e: MouseEvent) {
 }
 
 const meta = computed(() => QUADRANT_META[props.task.quadrant]);
+const due = computed(() => {
+  const at = props.task.due_at;
+  if (at == null || props.now == null) return null;
+  return {
+    state: props.task.done ? "later" : dueState(at, props.now),
+    label: dueLabel(at, props.now),
+    target: urgentTarget(props.task, props.now),
+  };
+});
 
 // Entrance animation only on mount: re-inserting a node during reorder would replay a
 // class-based animation and make every sibling flicker.
@@ -123,6 +133,13 @@ function onKeyDown(e: KeyboardEvent) {
         <span class="tag">
           <span class="dot"></span>{{ meta.name }}
         </span>
+        <span v-if="due" class="due" :class="due.state" :title="new Date(task.due_at!).toLocaleString()">⏰ {{ due.label }}</span>
+        <button
+          v-if="due?.target"
+          class="due-move"
+          :title="`截止临近，移到「${QUADRANT_META[due.target].name}」`"
+          @click="emit('move-to', task, due.target)"
+        >→ {{ QUADRANT_META[due.target].subtitle }}</button>
         <span class="score">{{ Math.round(task.priority) }}</span>
       </div>
     </div>
@@ -223,12 +240,21 @@ function onKeyDown(e: KeyboardEvent) {
   margin: 6px 0 0 26px; line-height: 1.5;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.meta-row { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; margin-left: 26px; }
+.meta-row { display: flex; align-items: center; flex-wrap: wrap; row-gap: 4px; margin-top: 8px; margin-left: 26px; }
 .tag {
   display: inline-flex; align-items: center; gap: 4px;
   font-size: 11px; padding: 2px 8px; border-radius: 10px;
   font-weight: 500; color: var(--q-color); background: var(--q-light);
 }
 .tag .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--q-color); }
-.score { font-size: 11px; color: var(--text-muted); }
+.score { font-size: 11px; color: var(--text-muted); margin-left: auto; }
+.due { font-size: 11px; color: var(--text-muted); margin-left: 8px; white-space: nowrap; }
+.due.soon { color: var(--warning); font-weight: 600; }
+.due.overdue { color: var(--danger); font-weight: 600; }
+.due-move {
+  font-size: 11px; margin-left: 6px; padding: 1px 6px;
+  border-radius: 8px; color: var(--q1); background: var(--q1-light);
+}
+.due-move:hover { filter: brightness(0.95); }
+
 </style>

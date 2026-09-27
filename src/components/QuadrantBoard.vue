@@ -7,9 +7,10 @@ import { DEFAULT_PRIORITY, QUADRANT_META, UNSCORED } from "../types";
 import { useTasks } from "../composables/useTasks";
 import { useToast } from "../composables/useToast";
 import { useBoardDrag } from "../composables/useBoardDrag";
+import { useDueReminders } from "../composables/useDueReminders";
 import { clampIndex, naturalIndex, planDrop, type TaskMove } from "../ordering";
 
-const { toggleTaskDone, deleteTask, reorderTasks, holdRemoteRefresh, tasksByQuadrant, createTask } = useTasks();
+const { tasks, toggleTaskDone, deleteTask, reorderTasks, holdRemoteRefresh, tasksByQuadrant, createTask } = useTasks();
 const { showError } = useToast();
 
 const quadrants: Quadrant[] = [1, 2, 3, 4];
@@ -110,6 +111,12 @@ function moveToQuadrant(task: Task, q: Quadrant) {
   applyKeyboardMoves(task, planDrop(task, q, list, index), `已移到「${QUADRANT_META[q].name}」第 ${index + 1} 位`);
 }
 
+// Deadlines: minute clock for the badges, one reminder when a deadline gets close.
+const { now } = useDueReminders(tasks, (task, q) => {
+  const current = tasks.value.find((t) => t.id === task.id);
+  if (current) moveToQuadrant(current, q);
+});
+
 function nudge(task: Task, delta: -1 | 1) {
   const full = tasksByQuadrant(task.quadrant);
   const from = full.findIndex((t) => t.id === task.id);
@@ -187,8 +194,10 @@ function nudge(task: Task, delta: -1 | 1) {
                   @pointer-down="onPointerDown"
                   @move-to="moveToQuadrant"
                   @nudge="nudge"
+                  :now="now"
                   @edit="editing = $event"
                 />
+
               </template>
             </TransitionGroup>
             <div v-if="!rows[q].length && adding !== q" class="empty">

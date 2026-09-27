@@ -164,13 +164,15 @@ impl Db {
             tx.execute(
                 "INSERT INTO tasks (id, title, description, quadrant, priority,
                  importance_score, urgency_score, done, created_at, completed_at,
-                 uid, updated_at, updated_by, deleted_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 uid, updated_at, updated_by, deleted_at, due_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     t.id, t.title, t.description, t.quadrant, t.priority,
                     t.importance_score, t.urgency_score, t.done as i64,
-                    t.created_at, t.completed_at, uid, updated_at, updated_by, t.deleted_at
+                    t.created_at, t.completed_at, uid, updated_at, updated_by, t.deleted_at,
+                    t.due_at
                 ],
+
             )
             .map_err(|e| e.to_string())?;
         }
@@ -187,7 +189,7 @@ impl Db {
             .prepare(
                 "SELECT id, title, description, quadrant, priority,
                         importance_score, urgency_score, done,
-                        created_at, completed_at
+                        created_at, completed_at, due_at
                  FROM tasks
                  WHERE deleted_at IS NULL
                  ORDER BY done ASC, priority DESC, id ASC",
@@ -207,7 +209,9 @@ impl Db {
                     done: row.get::<_, i64>(7)? != 0,
                     created_at: row.get(8)?,
                     completed_at: row.get(9)?,
+                    due_at: row.get(10)?,
                 })
+
             })
             .map_err(|e| e.to_string())?;
 
@@ -226,6 +230,7 @@ impl Db {
         validate_text(title, &input.description)?;
         validate_quadrant(input.quadrant)?;
         validate_priority(input.priority)?;
+        validate_due(input.due_at)?;
         validate_unit_score("重要性", input.importance_score)?;
         validate_unit_score("紧急性", input.urgency_score)?;
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -235,8 +240,8 @@ impl Db {
         conn.execute(
             "INSERT INTO tasks
                 (title, description, quadrant, priority, importance_score, urgency_score, done, created_at,
-                 uid, updated_at, updated_by)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10)",
+                 uid, updated_at, updated_by, due_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11)",
             params![
                 title,
                 input.description,
@@ -247,7 +252,8 @@ impl Db {
                 now,
                 uid,
                 now,
-                device
+                device,
+                input.due_at
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -263,6 +269,7 @@ impl Db {
             done: false,
             created_at: now,
             completed_at: None,
+            due_at: input.due_at,
         })
     }
 
@@ -274,16 +281,18 @@ impl Db {
         validate_text(title, &input.description)?;
         validate_quadrant(input.quadrant)?;
         validate_priority(input.priority)?;
+        validate_due(input.due_at)?;
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let now = Utc::now().timestamp_millis();
         let device = device_id_locked(&conn)?;
         let changed = conn
             .execute(
                 "UPDATE tasks
-                 SET title = ?1, description = ?2, quadrant = ?3, priority = ?4,
-                     updated_at = max(updated_at + 1, ?5), updated_by = ?6
-                 WHERE id = ?7 AND deleted_at IS NULL",
-                params![title, input.description, input.quadrant, input.priority, now, device, input.id],
+                 SET title = ?1, description = ?2, quadrant = ?3, priority = ?4, due_at = ?5,
+                     updated_at = max(updated_at + 1, ?6), updated_by = ?7
+                 WHERE id = ?8 AND deleted_at IS NULL",
+                params![title, input.description, input.quadrant, input.priority, input.due_at, now, device, input.id],
+
             )
             .map_err(|e| e.to_string())?;
         if changed == 0 {
@@ -631,7 +640,10 @@ impl Db {
         sync_tasks(&conn)
     }
 
-    pub fn merge_remote(&self, incoming: &[SyncTask]) -> Result<usize, String> {
+    /// `remote_schema` < 1 means the peer predates due dates and sends none, so an
+    /// update from it must not clear the local `due_at`.
+    pub fn merge_remote(&self, incoming: &[SyncTask], remote_schema: u32) -> Result<usize, String> {
+        let keep_local_due = remote_schema < 1;
         if incoming.len() > 5000 {
             return Err("一次同步的任务不能超过 5000 条".into());
         }
@@ -647,7 +659,7 @@ impl Db {
                 .query_row(
                     "SELECT uid, title, description, quadrant, priority,
                             importance_score, urgency_score, done, created_at, completed_at,
-                            updated_at, updated_by, deleted_at
+                            updated_at, updated_by, deleted_at, due_at
                      FROM tasks WHERE uid = ?1",
                     params![remote.uid],
                     read_sync_task,
@@ -661,13 +673,13 @@ impl Db {
                 tx.execute(
                     "INSERT INTO tasks
                         (title, description, quadrant, priority, importance_score, urgency_score,
-                         done, created_at, completed_at, uid, updated_at, updated_by, deleted_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                         done, created_at, completed_at, uid, updated_at, updated_by, deleted_at, due_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                     params![
                         remote.title, remote.description, remote.quadrant, remote.priority,
                         remote.importance_score, remote.urgency_score, remote.done as i64,
                         remote.created_at, remote.completed_at, remote.uid, remote.updated_at,
-                        remote.updated_by, remote.deleted_at
+                        remote.updated_by, remote.deleted_at, remote.due_at
                     ],
                 )
                 .map_err(|e| e.to_string())?;
@@ -677,14 +689,17 @@ impl Db {
                      SET title = ?1, description = ?2, quadrant = ?3, priority = ?4,
                          importance_score = ?5, urgency_score = ?6, done = ?7,
                          created_at = ?8, completed_at = ?9, updated_at = ?10,
-                         updated_by = ?11, deleted_at = ?12
+                         updated_by = ?11, deleted_at = ?12,
+                         due_at = CASE WHEN ?14 THEN due_at ELSE ?15 END
                      WHERE uid = ?13",
                     params![
                         remote.title, remote.description, remote.quadrant, remote.priority,
                         remote.importance_score, remote.urgency_score, remote.done as i64,
                         remote.created_at, remote.completed_at, remote.updated_at,
-                        remote.updated_by, remote.deleted_at, remote.uid
+                        remote.updated_by, remote.deleted_at, remote.uid,
+                        keep_local_due, remote.due_at
                     ],
+
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -701,6 +716,7 @@ fn ensure_sync_columns(conn: &Connection) -> Result<(), String> {
         ("updated_at", "updated_at INTEGER NOT NULL DEFAULT 0"),
         ("updated_by", "updated_by TEXT NOT NULL DEFAULT ''"),
         ("deleted_at", "deleted_at INTEGER"),
+        ("due_at", "due_at INTEGER"),
     ] {
         if !has_column(conn, column)? {
             conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {ddl}"), [])
@@ -781,11 +797,11 @@ fn parse_sync_port(value: &str) -> Result<u16, String> {
 fn backup_tasks(conn: &Connection, include_deleted: bool) -> Result<Vec<BackupTask>, String> {
     let sql = if include_deleted {
         "SELECT id, title, description, quadrant, priority, importance_score, urgency_score,
-                done, created_at, completed_at, uid, updated_at, updated_by, deleted_at
+                done, created_at, completed_at, uid, updated_at, updated_by, deleted_at, due_at
          FROM tasks"
     } else {
         "SELECT id, title, description, quadrant, priority, importance_score, urgency_score,
-                done, created_at, completed_at, uid, updated_at, updated_by, deleted_at
+                done, created_at, completed_at, uid, updated_at, updated_by, deleted_at, due_at
          FROM tasks WHERE deleted_at IS NULL"
     };
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
@@ -806,6 +822,7 @@ fn backup_tasks(conn: &Connection, include_deleted: bool) -> Result<Vec<BackupTa
                 updated_at: row.get(11)?,
                 updated_by: row.get(12)?,
                 deleted_at: row.get(13)?,
+                due_at: row.get(14)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -816,7 +833,7 @@ fn sync_tasks(conn: &Connection) -> Result<Vec<SyncTask>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT uid, title, description, quadrant, priority, importance_score, urgency_score,
-                    done, created_at, completed_at, updated_at, updated_by, deleted_at
+                    done, created_at, completed_at, updated_at, updated_by, deleted_at, due_at
              FROM tasks",
         )
         .map_err(|e| e.to_string())?;
@@ -839,6 +856,7 @@ fn read_sync_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncTask> {
         updated_at: row.get(10)?,
         updated_by: row.get(11)?,
         deleted_at: row.get(12)?,
+        due_at: row.get(13)?,
     })
 }
 
@@ -885,7 +903,10 @@ fn validate_sync_task(task: &SyncTask) -> Result<(), String> {
     if task.created_at < 0 || task.updated_at < 0 {
         return Err("同步时间无效".into());
     }
-    if task.completed_at.is_some_and(|value| value < 0) || task.deleted_at.is_some_and(|value| value < 0) {
+    if task.completed_at.is_some_and(|value| value < 0)
+        || task.deleted_at.is_some_and(|value| value < 0)
+        || task.due_at.is_some_and(|value| value < 0)
+    {
         return Err("同步时间无效".into());
     }
     Ok(())
@@ -917,6 +938,13 @@ fn calibration_bias(conn: &Connection) -> Result<(f64, f64), String> {
 fn validate_text(title: &str, description: &str) -> Result<(), String> {
     if title.chars().count() > 2000 || description.chars().count() > 20_000 {
         return Err("任务标题或描述过长".into());
+    }
+    Ok(())
+}
+
+fn validate_due(due_at: Option<i64>) -> Result<(), String> {
+    if due_at.is_some_and(|v| v < 0) {
+        return Err("截止时间无效".into());
     }
     Ok(())
 }
@@ -973,6 +1001,7 @@ mod tests {
             priority,
             importance_score: 3.0,
             urgency_score: 3.0,
+            due_at: None,
         }
     }
 
@@ -1014,11 +1043,14 @@ mod tests {
             description: "desc".into(),
             quadrant,
             priority: 42.0,
+            due_at: Some(1_900_000_000_000),
         };
         db.update_task(&edit("  new  ", 3)).unwrap();
         let got = find(&db, t.id);
         assert_eq!((got.title.as_str(), got.quadrant, got.priority), ("new", 3, 42.0));
         assert_eq!(got.description, "desc");
+        assert_eq!(got.due_at, Some(1_900_000_000_000));
+
 
         assert!(db.update_task(&edit("   ", 3)).is_err());
         assert!(db.update_task(&edit("x", 0)).is_err());
@@ -1095,13 +1127,36 @@ mod tests {
         remote.title = "remote".into();
         remote.updated_at += 10;
         remote.updated_by = "peer-device".into();
-        assert_eq!(db.merge_remote(std::slice::from_ref(&remote)).unwrap(), 1);
+        assert_eq!(db.merge_remote(std::slice::from_ref(&remote), SYNC_SCHEMA).unwrap(), 1);
         assert_eq!(db.get_tasks().unwrap()[0].title, "remote");
 
         let mut stale = remote.clone();
         stale.title = "stale".into();
         stale.updated_at -= 100;
-        assert_eq!(db.merge_remote(&[stale]).unwrap(), 0);
+        assert_eq!(db.merge_remote(&[stale], SYNC_SCHEMA).unwrap(), 0);
         assert_eq!(db.get_tasks().unwrap()[0].title, "remote");
     }
+
+    #[test]
+    fn old_peers_do_not_clear_due_dates() {
+        let db = Db::open_in_memory().unwrap();
+        let mut due = input("due", 1, 50.0);
+        due.due_at = Some(1_900_000_000_000);
+        db.create_task(&due).unwrap();
+
+        // A pre-due-date peer edits the title; its payload has no due_at.
+        let mut remote = db.sync_snapshot().unwrap().remove(0);
+        remote.title = "edited on old peer".into();
+        remote.due_at = None;
+        remote.updated_at += 10;
+        db.merge_remote(std::slice::from_ref(&remote), 0).unwrap();
+        let t = db.get_tasks().unwrap().remove(0);
+        assert_eq!((t.title.as_str(), t.due_at), ("edited on old peer", Some(1_900_000_000_000)));
+
+        // A current peer clearing the date does clear it.
+        remote.updated_at += 10;
+        db.merge_remote(&[remote], SYNC_SCHEMA).unwrap();
+        assert_eq!(db.get_tasks().unwrap()[0].due_at, None);
+    }
+
 }
