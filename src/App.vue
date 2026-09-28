@@ -46,8 +46,10 @@ async function minimizeToBall() {
 
 onMounted(async () => {
   if (isBallWindow.value) {
-    document.documentElement.style.background = "transparent";
-    document.body.style.background = "transparent";
+    // Only the ball itself may paint; #app carries the page gradient from style.css.
+    for (const el of [document.documentElement, document.body, document.getElementById("app")]) {
+      if (el) el.style.background = "transparent";
+    }
     return;
   }
   window.addEventListener("keydown", onGlobalKeyDown);
