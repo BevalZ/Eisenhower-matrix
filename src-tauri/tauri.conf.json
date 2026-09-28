@@ -34,11 +34,13 @@
         "decorations": false,
         "shadow": false,
         "alwaysOnTop": true,
+        "acceptFirstMouse": true,
         "transparent": true,
         "skipTaskbar": true,
         "visible": false
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
