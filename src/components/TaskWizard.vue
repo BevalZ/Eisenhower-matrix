@@ -9,26 +9,38 @@ import {
   type Quadrant,
   type ClassificationResult,
 } from "../types";
-import { fromLocalInput, quickDue, toLocalInput, dueLabel, type QuickDue } from "../due";
+import { fromLocalInput, quickDue, toLocalInput, dueLabel, parseDueText, type QuickDue } from "../due";
 import {
   IMPACT_CHOICES,
   DUE_CHOICES,
   CONSEQUENCE_CHOICES,
+  BUILT_IN_OPTIONS,
   estimateQuadrant,
   labelOf,
-  type Choice,
+  loadCustomOptions,
+  saveCustomOptions,
+  addOption,
+  removeOption,
+  type CustomOptions,
   type Impact,
   type Consequence,
+  type WizardField,
 } from "../wizard";
 
 const emit = defineEmits<{ close: []; "open-settings": [] }>();
 const { classifyTask, createTask, settings, recordQuadrantCorrection } = useTasks();
 
-type Step = "title" | "impact" | "due" | "consequence" | "note" | "confirm";
+type Step = WizardField | "confirm";
 
 interface Message {
   role: "ai" | "user";
   text: string;
+}
+
+/** A tappable answer; `value` is set only for built-in options. */
+interface Option {
+  label: string;
+  value?: string;
 }
 
 const step = ref<Step>("title");
@@ -36,14 +48,19 @@ const messages = ref<Message[]>([
   { role: "ai", text: "你好！用一句话写下要做的事吧。" },
 ]);
 const input = ref("");
+const saveOption = ref(false);
+const inputError = ref("");
 const analyzing = ref(false);
 const chatBox = ref<HTMLElement>();
+const custom = ref<CustomOptions>(loadCustomOptions());
 
 const form = reactive({
   title: "",
   impact: "unsure" as Impact,
-  due: "none" as QuickDue,
+  impactLabel: labelOf(IMPACT_CHOICES, "unsure"),
+  dueLabel: labelOf(DUE_CHOICES, "none"),
   consequence: "unsure" as Consequence,
+  consequenceLabel: labelOf(CONSEQUENCE_CHOICES, "unsure"),
   note: "",
 });
 
@@ -60,11 +77,28 @@ const QUESTIONS: Partial<Record<Step, string>> = {
   note: "还想补充一句吗？（可选，比如谁在等结果）",
 };
 
-const choices = computed<Choice<string>[]>(() => {
-  if (step.value === "impact") return IMPACT_CHOICES;
-  if (step.value === "due") return DUE_CHOICES;
-  if (step.value === "consequence") return CONSEQUENCE_CHOICES;
-  return [];
+const PLACEHOLDERS: Record<WizardField, string> = {
+  title: "例如：周五前交季度报告",
+  impact: "或用自己的话说，如：影响客户续约",
+  due: "或输入时间，如：3天内、周五、10月5日",
+  consequence: "或用自己的话说，如：会被扣绩效",
+  note: "一句话即可，没有就跳过",
+};
+
+const NEXT: Record<WizardField, Step> = {
+  title: "impact",
+  impact: "due",
+  due: "consequence",
+  consequence: "note",
+  note: "confirm",
+};
+
+const field = computed<WizardField | null>(() => (step.value === "confirm" ? null : step.value));
+
+const options = computed<Option[]>(() => {
+  const f = field.value;
+  if (!f) return [];
+  return [...BUILT_IN_OPTIONS[f], ...custom.value[f].map((label) => ({ label }))];
 });
 
 async function scrollBottom() {
@@ -82,29 +116,67 @@ function pushMsg(role: "ai" | "user", text: string) {
 
 function goTo(next: Step) {
   step.value = next;
+  input.value = "";
+  saveOption.value = false;
+  inputError.value = "";
   const q = QUESTIONS[next];
   if (q) pushMsg("ai", q);
   if (next === "confirm") runClassification();
 }
 
-function pick(value: string, label: string) {
-  if (analyzing.value) return;
-  pushMsg("user", label);
-  switch (step.value) {
+/**
+ * Records one answer and moves on. Typed text that matches a built-in label counts
+ * as tapping it. Returns false (and stays on the step) if a typed deadline isn't understood.
+ */
+function answer(f: WizardField, text: string, value?: string): boolean {
+  value ??= BUILT_IN_OPTIONS[f].find((c) => c.label === text)?.value;
+  switch (f) {
+    case "title":
+      form.title = text;
+      break;
     case "impact":
-      form.impact = value as Impact;
-      goTo("due");
+      form.impact = (value ?? "unsure") as Impact;
+      form.impactLabel = text;
       break;
-    case "due":
-      form.due = value as QuickDue;
-      dueInput.value = toLocalInput(quickDue(form.due, Date.now()));
-      goTo("consequence");
+    case "due": {
+      const now = Date.now();
+      const due = value !== undefined ? quickDue(value as QuickDue, now) : parseDueText(text, now);
+      if (due === undefined) {
+        inputError.value = "没看懂这个时间，可以写成「3天内」「周五」「下周三」「10月5日」";
+        return false;
+      }
+      form.dueLabel = text;
+      dueInput.value = toLocalInput(due);
       break;
+    }
     case "consequence":
-      form.consequence = value as Consequence;
-      goTo("note");
+      form.consequence = (value ?? "unsure") as Consequence;
+      form.consequenceLabel = text;
+      break;
+    case "note":
+      form.note = text;
       break;
   }
+  pushMsg("user", text);
+  goTo(NEXT[f]);
+  return true;
+}
+
+function pick(opt: Option) {
+  if (analyzing.value || !field.value) return;
+  answer(field.value, opt.label, opt.value);
+}
+
+function remember(f: WizardField, text: string) {
+  const list = addOption(custom.value[f], text, BUILT_IN_OPTIONS[f].map((c) => c.label));
+  if (list === custom.value[f]) return;
+  custom.value = { ...custom.value, [f]: list };
+  saveCustomOptions(custom.value);
+}
+
+function forget(f: WizardField, label: string) {
+  custom.value = { ...custom.value, [f]: removeOption(custom.value[f], label) };
+  saveCustomOptions(custom.value);
 }
 
 function skip() {
@@ -116,9 +188,9 @@ function describe(): string {
   const due = fromLocalInput(dueInput.value);
   return [
     `任务：${form.title}`,
-    `影响：${labelOf(IMPACT_CHOICES, form.impact)}`,
-    `截止：${due == null ? "没有截止" : `${labelOf(DUE_CHOICES, form.due)}（${dueLabel(due, Date.now())}）`}`,
-    `拖延后果：${labelOf(CONSEQUENCE_CHOICES, form.consequence)}`,
+    `影响：${form.impactLabel}`,
+    `截止：${due == null ? "没有截止" : `${form.dueLabel}（${dueLabel(due, Date.now())}）`}`,
+    `拖延后果：${form.consequenceLabel}`,
     form.note && `补充：${form.note}`,
   ]
     .filter(Boolean)
@@ -141,7 +213,10 @@ async function runClassification() {
     // Fall back to a guess from the tapped answers; scores stay UNSCORED so a
     // later move isn't learned as a correction of the AI.
     aiClassified.value = false;
-    const quadrant = estimateQuadrant(form);
+    const quadrant = estimateQuadrant(
+      { impact: form.impact, consequence: form.consequence, dueAt: fromLocalInput(dueInput.value) },
+      Date.now()
+    );
     result.value = null;
     manualQuadrant.value = quadrant;
     manualPriority.value = DEFAULT_PRIORITY[quadrant];
@@ -189,17 +264,11 @@ async function save() {
 }
 
 function submit() {
-  if (!input.value.trim() || analyzing.value) return;
-  const ans = input.value.trim();
-  input.value = "";
-  pushMsg("user", ans);
-  if (step.value === "title") {
-    form.title = ans;
-    goTo("impact");
-  } else if (step.value === "note") {
-    form.note = ans;
-    goTo("confirm");
-  }
+  const f = field.value;
+  const text = input.value.trim();
+  if (!f || !text || analyzing.value) return;
+  const save = saveOption.value; // answer() moves on and resets the checkbox
+  if (answer(f, text) && save) remember(f, text);
 }
 </script>
 
@@ -247,37 +316,49 @@ function submit() {
         </div>
       </div>
 
-      <!-- Tap answers -->
-      <div v-if="choices.length" class="choice-row">
-        <button
-          v-for="c in choices"
-          :key="c.value"
-          class="chip"
-          :disabled="analyzing"
-          @click="pick(c.value, c.label)"
-        >
-          {{ c.label }}
-        </button>
-      </div>
-
-      <!-- Short text: title, optional note -->
-      <div v-else-if="step === 'title' || step === 'note'" class="input-row">
-        <input
-          v-model="input"
-          type="text"
-          maxlength="100"
-          :placeholder="step === 'title' ? '例如：周五前交季度报告' : '一句话即可，没有就跳过'"
-          autofocus
-          @keyup.enter="submit"
-        />
-        <button v-if="step === 'note'" class="btn btn-ghost" @click="skip">跳过</button>
-        <button class="btn btn-primary" :disabled="analyzing || !input.trim()" @click="submit">
-          {{ step === 'title' ? '下一步' : '发送' }}
-        </button>
-      </div>
+      <!-- Answer: tap an option, or type one (and optionally keep it for next time) -->
+      <form v-if="field" class="answer" @submit.prevent="submit">
+        <div v-if="options.length" class="choice-row">
+          <template v-for="o in options" :key="o.label">
+            <button v-if="o.value" type="button" class="chip" @click="pick(o)">{{ o.label }}</button>
+            <span v-else class="chip custom">
+              <button type="button" class="chip-pick" :title="o.label" @click="pick(o)">{{ o.label }}</button>
+              <button
+                type="button"
+                class="chip-del"
+                :aria-label="`删除选项「${o.label}」`"
+                title="删除这个选项"
+                @click="forget(field, o.label)"
+              >
+                <svg width="8" height="8" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                  <path d="M3 3l8 8M11 3l-8 8"/>
+                </svg>
+              </button>
+            </span>
+          </template>
+        </div>
+        <div class="input-row">
+          <input
+            v-model="input"
+            type="text"
+            maxlength="100"
+            :placeholder="PLACEHOLDERS[field]"
+            autofocus
+            @input="inputError = ''"
+          />
+          <button v-if="step === 'note'" type="button" class="btn btn-ghost" @click="skip">跳过</button>
+          <button type="submit" class="btn btn-primary" :disabled="!input.trim()">
+            {{ step === 'title' ? '下一步' : '发送' }}
+          </button>
+        </div>
+        <p v-if="inputError" class="input-error" role="alert">{{ inputError }}</p>
+        <label class="save-opt" title="下次新建任务时可以直接点选">
+          <input v-model="saveOption" type="checkbox" />保存为选项
+        </label>
+      </form>
 
       <!-- Confirm panel -->
-      <div v-else-if="step === 'confirm' && !analyzing" class="confirm anim-slideUp">
+      <div v-if="step === 'confirm' && !analyzing" class="confirm anim-slideUp">
         <div v-if="result" class="result-cards">
           <div class="r-card">
             <label>重要性</label>
@@ -335,7 +416,7 @@ function submit() {
   border-radius: var(--radius-lg);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
   box-shadow: var(--shadow-lg);
 }
 .wizard-head {
@@ -461,12 +542,17 @@ h3 {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
   30% { transform: translateY(-4px); opacity: 1; }
 }
-.input-row {
+.answer {
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: 10px;
   padding: 14px 20px;
   border-top: 1px solid var(--border-light);
   background: var(--surface-2);
+}
+.input-row {
+  display: flex;
+  gap: 8px;
 }
 .confirm {
   padding: 16px 20px;
@@ -476,22 +562,69 @@ h3 {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 14px 20px;
-  border-top: 1px solid var(--border-light);
-  background: var(--surface-2);
+  max-height: 124px; /* about three rows; saved options scroll */
+  overflow-y: auto;
 }
 .chip {
+  max-width: 100%;
   padding: 7px 14px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
   font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.chip:hover:not(:disabled) {
+.chip:hover {
   border-color: var(--primary);
   color: var(--primary);
+}
+/* A saved option: the label picks it, × removes it */
+.chip.custom {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px 0 0;
+}
+.chip-pick {
+  min-width: 0;
+  padding: 7px 6px 7px 14px;
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip-del {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: var(--text-muted);
+}
+.chip-del:hover {
+  background: var(--danger-light);
+  color: var(--danger);
+}
+.input-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+.save-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.save-opt input {
+  accent-color: var(--primary);
 }
 .result-cards {
   display: flex;

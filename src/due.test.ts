@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Quadrant, Task } from "./types";
-import { dueLabel, dueState, fromLocalInput, quickDue, toLocalInput, urgentTarget } from "./due";
+import { dueInDays, dueLabel, dueState, fromLocalInput, parseDueText, quickDue, toLocalInput, urgentTarget } from "./due";
 
 const at = (y: number, m: number, d: number, h = 0, min = 0) => new Date(y, m - 1, d, h, min).getTime();
 
@@ -55,5 +55,73 @@ describe("due dates", () => {
     expect(quickDue("week", at(2026, 9, 29, 8))).toBe(at(2026, 10, 4, 23, 59));
     expect(quickDue("month", now)).toBe(at(2026, 10, 27, 23, 59));
     expect(quickDue("none", now)).toBeNull();
+  });
+
+  it("counts calendar days to 23:59", () => {
+    expect(dueInDays(0, now)).toBe(at(2026, 9, 27, 23, 59));
+    expect(dueInDays(5, now)).toBe(at(2026, 10, 2, 23, 59));
+  });
+});
+
+describe("typed deadlines", () => {
+  // 2026-09-27 10:00 is a Sunday.
+  const now = at(2026, 9, 27, 10, 0);
+  const wednesday = at(2026, 9, 30, 10, 0);
+  const due = (text: string, from = now) => parseDueText(text, from);
+  const end = (y: number, m: number, d: number) => at(y, m, d, 23, 59);
+
+  it("reads days, weeks and months from now", () => {
+    expect(due("今天")).toBe(end(2026, 9, 27));
+    expect(due("明天前")).toBe(end(2026, 9, 28));
+    expect(due("大后天")).toBe(end(2026, 9, 30));
+    expect(due("3天内")).toBe(end(2026, 9, 30));
+    expect(due("三天之内")).toBe(end(2026, 9, 30));
+    expect(due(" 3 天 ")).toBe(end(2026, 9, 30));
+    expect(due("十二天")).toBe(end(2026, 10, 9));
+    expect(due("两周")).toBe(end(2026, 10, 11));
+    expect(due("一个星期以内")).toBe(end(2026, 10, 4));
+    expect(due("一个月")).toBe(end(2026, 10, 27));
+  });
+
+  it("keeps a month count inside a short month", () => {
+    expect(due("两个月", at(2026, 12, 31, 10))).toBe(end(2027, 2, 28));
+    expect(due("1个月", at(2028, 1, 31, 10))).toBe(end(2028, 2, 29));
+  });
+
+  it("reads weekdays with weeks starting on Monday", () => {
+    expect(due("周五前")).toBe(end(2026, 10, 2));
+    expect(due("星期一")).toBe(end(2026, 9, 28));
+    expect(due("周日")).toBe(end(2026, 9, 27));
+    expect(due("周末")).toBe(end(2026, 9, 27));
+    expect(due("下周三")).toBe(end(2026, 9, 30));
+    expect(due("下周日")).toBe(end(2026, 10, 4));
+    expect(due("下下周一")).toBe(end(2026, 10, 5));
+    expect(due("下周内")).toBe(end(2026, 10, 4));
+    expect(due("周三", wednesday)).toBe(end(2026, 9, 30));
+    expect(due("周二", wednesday)).toBe(end(2026, 10, 6));
+    expect(due("下周三", wednesday)).toBe(end(2026, 10, 7));
+    expect(due("下周", wednesday)).toBe(end(2026, 10, 11));
+  });
+
+  it("reads month ends and dates, rolling a passed date to next year", () => {
+    expect(due("月底前")).toBe(end(2026, 9, 30));
+    expect(due("本月内")).toBe(end(2026, 9, 30));
+    expect(due("10月5日")).toBe(end(2026, 10, 5));
+    expect(due("10月5号前")).toBe(end(2026, 10, 5));
+    expect(due("10/5")).toBe(end(2026, 10, 5));
+    expect(due("9月27日")).toBe(end(2026, 9, 27));
+    expect(due("9月26日")).toBe(end(2027, 9, 26));
+    expect(due("2027年1月3日")).toBe(end(2027, 1, 3));
+    expect(due("2027-1-3")).toBe(end(2027, 1, 3));
+  });
+
+  it("returns null for no deadline and undefined when not understood", () => {
+    expect(due("没有")).toBeNull();
+    expect(due("不急")).toBeNull();
+    expect(due("2月30日")).toBeUndefined();
+    expect(due("13月1日")).toBeUndefined();
+    expect(due("10月0日")).toBeUndefined();
+    expect(due("0天")).toBeUndefined();
+    expect(due("随便什么时候")).toBeUndefined();
   });
 });
