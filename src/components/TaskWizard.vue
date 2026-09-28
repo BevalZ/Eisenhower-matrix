@@ -1,19 +1,30 @@
 <script setup lang="ts">
-import { ref, nextTick, reactive } from "vue";
+import { ref, nextTick, reactive, computed } from "vue";
 import { useTasks } from "../composables/useTasks";
 import {
   QUADRANT_META,
+  DEFAULT_PRIORITY,
+  UNSCORED,
   scoresForQuadrant,
   type Quadrant,
   type ClassificationResult,
 } from "../types";
-import { fromLocalInput } from "../due";
-
+import { fromLocalInput, quickDue, toLocalInput, dueLabel, type QuickDue } from "../due";
+import {
+  IMPACT_CHOICES,
+  DUE_CHOICES,
+  CONSEQUENCE_CHOICES,
+  estimateQuadrant,
+  labelOf,
+  type Choice,
+  type Impact,
+  type Consequence,
+} from "../wizard";
 
 const emit = defineEmits<{ close: []; "open-settings": [] }>();
 const { classifyTask, createTask, settings, recordQuadrantCorrection } = useTasks();
 
-type Step = "title" | "content" | "importance" | "urgency" | "context" | "confirm";
+type Step = "title" | "impact" | "due" | "consequence" | "note" | "confirm";
 
 interface Message {
   role: "ai" | "user";
@@ -22,7 +33,7 @@ interface Message {
 
 const step = ref<Step>("title");
 const messages = ref<Message[]>([
-  { role: "ai", text: "你好！我来帮你梳理任务。这个任务叫什么名字？" },
+  { role: "ai", text: "你好！用一句话写下要做的事吧。" },
 ]);
 const input = ref("");
 const analyzing = ref(false);
@@ -30,10 +41,10 @@ const chatBox = ref<HTMLElement>();
 
 const form = reactive({
   title: "",
-  content: "",
-  whyImportant: "",
-  urgency: "",
-  context: "",
+  impact: "unsure" as Impact,
+  due: "none" as QuickDue,
+  consequence: "unsure" as Consequence,
+  note: "",
 });
 
 const result = ref<ClassificationResult | null>(null);
@@ -41,6 +52,20 @@ const aiClassified = ref(false);
 const manualQuadrant = ref<Quadrant>(1);
 const manualPriority = ref(50);
 const dueInput = ref("");
+
+const QUESTIONS: Partial<Record<Step, string>> = {
+  impact: "做好这件事，影响有多大？",
+  due: "什么时候要完成？",
+  consequence: "如果拖着不做，会怎样？",
+  note: "还想补充一句吗？（可选，比如谁在等结果）",
+};
+
+const choices = computed<Choice<string>[]>(() => {
+  if (step.value === "impact") return IMPACT_CHOICES;
+  if (step.value === "due") return DUE_CHOICES;
+  if (step.value === "consequence") return CONSEQUENCE_CHOICES;
+  return [];
+});
 
 async function scrollBottom() {
   await nextTick();
@@ -55,57 +80,56 @@ function pushMsg(role: "ai" | "user", text: string) {
   scrollBottom();
 }
 
-function nextStep(answer: string) {
-  pushMsg("user", answer);
+function goTo(next: Step) {
+  step.value = next;
+  const q = QUESTIONS[next];
+  if (q) pushMsg("ai", q);
+  if (next === "confirm") runClassification();
+}
 
+function pick(value: string, label: string) {
+  if (analyzing.value) return;
+  pushMsg("user", label);
   switch (step.value) {
-    case "title":
-      form.title = answer;
-      step.value = "content";
-      pushMsg("ai", "好的。能具体描述一下这个任务要做什么、达到什么结果吗？");
+    case "impact":
+      form.impact = value as Impact;
+      goTo("due");
       break;
-    case "content":
-      form.content = answer;
-      step.value = "importance";
-      pushMsg("ai", "这件事为什么重要？它和你的什么目标或责任相关？");
+    case "due":
+      form.due = value as QuickDue;
+      dueInput.value = toLocalInput(quickDue(form.due, Date.now()));
+      goTo("consequence");
       break;
-    case "importance":
-      form.whyImportant = answer;
-      step.value = "urgency";
-      pushMsg("ai", "它有截止时间吗？如果拖延会有什么后果？");
-      break;
-    case "urgency":
-      form.urgency = answer;
-      step.value = "context";
-      pushMsg("ai", "还有其他背景或上下文需要补充吗？没有的话输入「跳过」。");
-      break;
-    case "context":
-      form.context = answer === "跳过" ? "" : answer;
-      step.value = "confirm";
-      runClassification();
+    case "consequence":
+      form.consequence = value as Consequence;
+      goTo("note");
       break;
   }
 }
 
 function skip() {
-  nextStep("跳过");
+  pushMsg("user", "跳过");
+  goTo("confirm");
+}
+
+function describe(): string {
+  const due = fromLocalInput(dueInput.value);
+  return [
+    `任务：${form.title}`,
+    `影响：${labelOf(IMPACT_CHOICES, form.impact)}`,
+    `截止：${due == null ? "没有截止" : `${labelOf(DUE_CHOICES, form.due)}（${dueLabel(due, Date.now())}）`}`,
+    `拖延后果：${labelOf(CONSEQUENCE_CHOICES, form.consequence)}`,
+    form.note && `补充：${form.note}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 async function runClassification() {
   analyzing.value = true;
   pushMsg("ai", "正在分析这个任务的位置…");
   try {
-    const description = [
-      `任务：${form.title}`,
-      form.content && `内容：${form.content}`,
-      form.whyImportant && `为什么重要：${form.whyImportant}`,
-      form.urgency && `紧迫情况：${form.urgency}`,
-      form.context && `上下文：${form.context}`,
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    result.value = await classifyTask(description);
+    result.value = await classifyTask(describe());
     aiClassified.value = true;
     manualQuadrant.value = result.value.quadrant;
     manualPriority.value = Math.round(result.value.priority);
@@ -114,17 +138,17 @@ async function runClassification() {
       `分析完成！这个任务属于「${QUADRANT_META[result.value.quadrant].name}」，综合优先级 ${Math.round(result.value.priority)} 分。请确认或调整后保存。`
     );
   } catch (e: any) {
+    // Fall back to a guess from the tapped answers; scores stay UNSCORED so a
+    // later move isn't learned as a correction of the AI.
     aiClassified.value = false;
-    pushMsg("ai", `AI 分析失败：${e}\n你可以在下方手动选择象限后保存。`);
-    result.value = {
-      quadrant: 2,
-      priority: 50,
-      importance_score: 2.5,
-      urgency_score: 2.5,
-      importance_label: "中等影响，支撑部分目标",
-      urgency_label: "合理截止，近几天内",
-    };
-    manualQuadrant.value = 2;
+    const quadrant = estimateQuadrant(form);
+    result.value = null;
+    manualQuadrant.value = quadrant;
+    manualPriority.value = DEFAULT_PRIORITY[quadrant];
+    pushMsg(
+      "ai",
+      `AI 分析不可用（${e}）。\n根据你的选择，建议放在「${QUADRANT_META[quadrant].name}」，可在下方调整后保存。`
+    );
   } finally {
     analyzing.value = false;
   }
@@ -138,11 +162,11 @@ async function save() {
   try {
     await createTask({
       title: form.title,
-      description: form.content || form.whyImportant || "",
+      description: form.note,
       quadrant: manualQuadrant.value,
       priority,
-      importance_score: ai?.importance_score ?? 2.5,
-      urgency_score: ai?.urgency_score ?? 2.5,
+      importance_score: ai?.importance_score ?? UNSCORED,
+      urgency_score: ai?.urgency_score ?? UNSCORED,
       due_at: fromLocalInput(dueInput.value),
     });
   } catch (err) {
@@ -168,7 +192,14 @@ function submit() {
   if (!input.value.trim() || analyzing.value) return;
   const ans = input.value.trim();
   input.value = "";
-  nextStep(ans);
+  pushMsg("user", ans);
+  if (step.value === "title") {
+    form.title = ans;
+    goTo("impact");
+  } else if (step.value === "note") {
+    form.note = ans;
+    goTo("confirm");
+  }
 }
 </script>
 
@@ -216,22 +247,37 @@ function submit() {
         </div>
       </div>
 
-      <!-- Input -->
-      <div v-if="step !== 'confirm'" class="input-row">
+      <!-- Tap answers -->
+      <div v-if="choices.length" class="choice-row">
+        <button
+          v-for="c in choices"
+          :key="c.value"
+          class="chip"
+          :disabled="analyzing"
+          @click="pick(c.value, c.label)"
+        >
+          {{ c.label }}
+        </button>
+      </div>
+
+      <!-- Short text: title, optional note -->
+      <div v-else-if="step === 'title' || step === 'note'" class="input-row">
         <input
           v-model="input"
           type="text"
-          :placeholder="step === 'context' ? '输入「跳过」可跳过此步…' : '输入你的回答…'"
+          maxlength="100"
+          :placeholder="step === 'title' ? '例如：周五前交季度报告' : '一句话即可，没有就跳过'"
+          autofocus
           @keyup.enter="submit"
         />
-        <button v-if="step === 'context'" class="btn btn-ghost" @click="skip">跳过</button>
-        <button class="btn btn-primary" :disabled="analyzing" @click="submit">
-          发送
+        <button v-if="step === 'note'" class="btn btn-ghost" @click="skip">跳过</button>
+        <button class="btn btn-primary" :disabled="analyzing || !input.trim()" @click="submit">
+          {{ step === 'title' ? '下一步' : '发送' }}
         </button>
       </div>
 
       <!-- Confirm panel -->
-      <div v-else class="confirm anim-slideUp">
+      <div v-else-if="step === 'confirm' && !analyzing" class="confirm anim-slideUp">
         <div v-if="result" class="result-cards">
           <div class="r-card">
             <label>重要性</label>
@@ -252,14 +298,13 @@ function submit() {
         <div class="adjust">
           <label>象限</label>
           <select v-model.number="manualQuadrant">
-            <option :value="1">{{ QUADRANT_META[1].name }}（{{ QUADRANT_META[1].subtitle }}）</option>
-            <option :value="2">{{ QUADRANT_META[2].name }}（{{ QUADRANT_META[2].subtitle }}）</option>
-            <option :value="3">{{ QUADRANT_META[3].name }}（{{ QUADRANT_META[3].subtitle }}）</option>
-            <option :value="4">{{ QUADRANT_META[4].name }}（{{ QUADRANT_META[4].subtitle }}）</option>
+            <option v-for="q in ([1, 2, 3, 4] as const)" :key="q" :value="q">
+              {{ QUADRANT_META[q].name }}（{{ QUADRANT_META[q].subtitle }}）
+            </option>
           </select>
-          <label>优先级（0-100）</label>
-          <input type="number" min="0" max="100" step="1" v-model.number="manualPriority" />
-          <label>截止时间（可选）</label>
+          <label>优先级：{{ manualPriority }}</label>
+          <input type="range" min="0" max="100" step="1" v-model.number="manualPriority" />
+          <label>截止时间</label>
           <input type="datetime-local" v-model="dueInput" />
         </div>
 
@@ -426,6 +471,27 @@ h3 {
 .confirm {
   padding: 16px 20px;
   border-top: 1px solid var(--border-light);
+}
+.choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border-light);
+  background: var(--surface-2);
+}
+.chip {
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.chip:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
 }
 .result-cards {
   display: flex;

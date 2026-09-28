@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Quadrant, Task } from "./types";
-import { dueLabel, dueState, fromLocalInput, toLocalInput, urgentTarget } from "./due";
+import { dueLabel, dueState, fromLocalInput, quickDue, toLocalInput, urgentTarget } from "./due";
 
 const at = (y: number, m: number, d: number, h = 0, min = 0) => new Date(y, m - 1, d, h, min).getTime();
 
@@ -44,5 +44,16 @@ describe("due dates", () => {
     expect(fromLocalInput("2026-12-31T23:45")).toBe(ms);
     expect(fromLocalInput("")).toBeNull();
     expect(toLocalInput(null)).toBe("");
+  });
+
+  it("maps one-tap deadlines to 23:59 local time", () => {
+    // 2026-09-27 is a Sunday.
+    expect(quickDue("today", now)).toBe(at(2026, 9, 27, 23, 59));
+    expect(quickDue("tomorrow", now)).toBe(at(2026, 9, 28, 23, 59));
+    expect(quickDue("week", now)).toBe(at(2026, 9, 27, 23, 59));
+    expect(quickDue("nextWeek", now)).toBe(at(2026, 10, 4, 23, 59));
+    expect(quickDue("week", at(2026, 9, 29, 8))).toBe(at(2026, 10, 4, 23, 59));
+    expect(quickDue("month", now)).toBe(at(2026, 10, 27, 23, 59));
+    expect(quickDue("none", now)).toBeNull();
   });
 });

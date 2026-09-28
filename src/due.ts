@@ -47,6 +47,17 @@ export function fromLocalInput(value: string): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+export type QuickDue = "today" | "tomorrow" | "week" | "nextWeek" | "month" | "none";
+
+/** One-tap deadlines, all at 23:59 local time; "week" ends on Sunday. */
+export function quickDue(kind: QuickDue, now: number): number | null {
+  if (kind === "none") return null;
+  const d = new Date(now);
+  const toSunday = (7 - d.getDay()) % 7;
+  const days = { today: 0, tomorrow: 1, week: toSunday, nextWeek: toSunday + 7, month: 30 }[kind];
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days, 23, 59).getTime();
+}
+
 /** Whole local calendar days from `a` to `b`; rounding absorbs 23/25-hour DST days. */
 function calendarDaysBetween(a: Date, b: Date): number {
   const start = new Date(a.getFullYear(), a.getMonth(), a.getDate()).getTime();
