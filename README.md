@@ -214,6 +214,10 @@ API Key 和 WebDAV 密码保存在系统凭据管理器（Windows 凭据管理�
 4. 推送到分支 (`git push origin feature/amazing`)
 5. 开启 Pull Request
 
+## 致谢
+
+感谢 [LINUX DO](https://linux.do) 社区及各位佬友的支持。
+
 ## License
 
 [MIT](./LICENSE)
