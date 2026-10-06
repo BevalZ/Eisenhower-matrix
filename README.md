@@ -108,6 +108,8 @@
 
 ## 从源码构建
 
+> **接手开发先看 [HANDOFF.md](HANDOFF.md)**：里面有本机环境的坑、CI 全景、代码地图、待办清单，以及每一轮改动的变更日志（每轮都会更新）。
+
 ### 前置要求
 
 - **Rust** ≥ 1.90（Tauri 2.12 的要求，[rustup.rs](https://rustup.rs/)）
@@ -148,6 +150,13 @@ npm run tauri build
 ### 不在本地构建：用 GitHub Actions 出测试包
 
 推送到 `main` 以外的任意分支，`Test Build` 工作流会先跑类型检查和单元测试，再打出 Windows 安装版和便携版，放在该次运行页面底部的 **Artifacts** 里（保留 14 天）。需要 macOS / Linux 包时，在 Actions 页面手动运行 `Test Build` 并勾选 “Also build macOS and Linux”。正式发布仍然是推送 `v*` tag 触发 `Release`。
+
+想在命令行看构建结果（本机没有 `gh` CLI 也能用）：
+
+```bash
+python scripts/ci.py runs main android.yml     # 最近几次运行
+python scripts/ci.py watch main android.yml    # 等到结束，失败时直接打印失败步骤日志
+```
 
 ### Android 端
 
