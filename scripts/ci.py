@@ -20,6 +20,7 @@ git 已保存的凭据，通过 HTTP 代理访问公开 API，因此可以直接
   GITHUB_REPO                可选；默认从 `git remote get-url origin` 推断
 """
 
+import http.client
 import json
 import os
 import re
@@ -84,13 +85,14 @@ def _request(path, raw):
                  "Accept": "application/vnd.github+json"})
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}), _NoAuthRedirect())
-    # 代理偶尔会掐断连接，重试几次比让整轮观察中断划算得多。
+    # 代理偶尔会掐断连接或截断响应（IncompleteRead / 半截 JSON），重试比让整轮观察中断划算。
     last = None
     for attempt in range(RETRIES):
         try:
             data = opener.open(req, timeout=300).read()
             return data if raw else json.loads(data.decode("utf-8", "replace"))
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as err:
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError,
+                ConnectionError, OSError, ValueError) as err:
             last = err
             print(f"  (网络重试 {attempt + 1}/{RETRIES}: {type(err).__name__})", flush=True)
             time.sleep(3 * (attempt + 1))
