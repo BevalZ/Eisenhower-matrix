@@ -10,10 +10,50 @@
 [![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
+[界面预览](#界面预览) · [功能特性](#功能特性) · [下载安装](#下载安装) · [快捷键](#快捷键) · [配置](#配置) · [从源码构建](#从源码构建)
+
 > *"The key is not to prioritize what's on your schedule, but to schedule your priorities."*
 > — Stephen Covey
 
 ---
+
+## 界面预览
+
+### 四象限看板
+
+按「重要性 × 紧急性」组织任务，在同一视图中查看任务描述、截止时间、优先级和完成状态。支持浅色与深色主题。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/board-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/board-light.png">
+  <img src="docs/screenshots/board-light.png" alt="四象限任务看板：左上计划做、右上立即做、左下删除或少做、右下委托或快做，展示示例任务及其完成状态" width="1200">
+</picture>
+
+查看原图：[浅色看板](docs/screenshots/board-light.png) · [深色看板](docs/screenshots/board-dark.png)
+
+<details>
+<summary><strong>数据统计：完成进度、象限分布与近 7 天趋势（点击展开）</strong></summary>
+
+统计页汇总总任务数、已完成、待处理和完成率，并通过各象限进度与本周回顾，帮助判断时间是否花在了重要的事上。
+
+![数据统计页：12 个示例任务、4 个已完成、33% 完成率，以及各象限进度和近 7 天完成趋势](docs/screenshots/statistics.png)
+
+</details>
+
+<details>
+<summary><strong>任务创建向导：通过对话梳理重要性与截止时间（点击展开）</strong></summary>
+
+先用一句话描述任务，再回答影响程度与完成时间，逐步明确任务优先级。
+
+<p align="center">
+  <img src="docs/screenshots/task-wizard.png" alt="任务创建向导：输入学习计划、选择影响程度，并通过快捷选项填写完成时间" width="500">
+</p>
+
+> 图中未配置 API Key，因此保留了提示信息；AI 自动分类需先[配置 JevAI API Key](#jevai-api-key)，未配置时仍可手动选择象限。
+
+</details>
+
+*以上截图使用示例任务数据，不包含真实任务或凭据。*
 
 ## 功能特性
 
@@ -179,6 +219,7 @@ npm run tauri build
 │   ├── Cargo.toml
 │   └── tauri.conf.json
 ├── .github/workflows/       # CI/CD 自动打包
+├── docs/screenshots/        # README 界面截图（示例数据）
 ├── index.html
 └── package.json
 ```
