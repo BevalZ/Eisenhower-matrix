@@ -172,11 +172,11 @@ python scripts/ci.py watch main android.yml
 
 ## 8. 变更日志（新的一轮追加在最上面）
 
-### 第 4 轮 · 2026-10-06 · 交接文档与 CI 脚本
+### 第 4 轮 · 2026-10-06 · 交接文档与 CI 脚本（提交 `d44d265`）
 
-- 新增本文件 `HANDOFF.md` 与 `scripts/ci.py`（把上一轮临时用的 CI 观察脚本正式收进仓库，加上了网络重试）。
-- README 增加指向本文件的入口。
-- 未改任何业务代码；验证方式：`vue-tsc` / `vitest` / `cargo test` 结果与第 3 轮一致（文档与脚本改动不影响构建）。
+- 新增本文件 `HANDOFF.md` 与 `scripts/ci.py`（把上一轮临时用的 CI 观察脚本正式收进仓库，加了网络重试）。
+- README 增加指向本文件的入口与 `scripts/ci.py` 用法；`.gitignore` 忽略 `__pycache__/`；`android.yml` 的 `paths-ignore` 增加 `scripts/**`、`.gitignore`（纯脚本/文档改动不必跑 APK 构建）。
+- 未改任何业务代码；验证：`vue-tsc` / `vitest` / `cargo test` 结果与第 3 轮一致（文档与脚本改动不影响构建）。
 
 ### 第 3 轮 · 2026-10-06 · Android 端 + 远程打包（提交 `33aa17b` → `0dd4531`，已快进合并进 `main`）
 

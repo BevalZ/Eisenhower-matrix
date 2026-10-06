@@ -14,7 +14,7 @@ on:
   push:
     branches: [main, "feat/**", "ci/**"]
     tags: ["v*"]
-    paths-ignore: ["**.md", "LICENSE", "docs/**", "scripts/**"]
+    paths-ignore: ["**.md", "LICENSE", "docs/**", "scripts/**", ".gitignore"]
   workflow_dispatch:
     inputs:
       release:
