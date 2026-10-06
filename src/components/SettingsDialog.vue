@@ -1,16 +1,28 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, computed } from "vue";
 import { useTasks } from "../composables/useTasks";
+import { errorText } from "../composables/useToast";
+import { usePlatform } from "../composables/usePlatform";
 import type { PeerSyncStatus, TailscaleStatus, WebdavConfig } from "../types";
 
 const emit = defineEmits<{ close: [] }>();
+// Tailscale peer sync needs the desktop `tailscale` CLI, so the tab is desktop-only.
+const { isMobile } = usePlatform();
 const {
-  settings, saveApiKey, saveAiConfig, loadSettings, loadTasks,
+  settings, saveApiKey, saveAiConfig, loadSettings,
   setTheme, exportToFile, importData,
   saveWebdav, getWebdavConfig, syncToWebdav, restoreFromWebdav,
   getTailscaleStatus, getPeerSyncStatus, savePeerSyncConfig,
-  setPeerSyncListening, syncWithPeer, syncAllPeers,
+  setPeerSyncListening, syncWithPeer, syncAllPeers, revealSyncSecret,
 } = useTasks();
+
+/** Inline status text that clears itself unless a newer message replaced it first. */
+function flash(target: { value: string }, text: string, ms = 2000) {
+  target.value = text;
+  setTimeout(() => {
+    if (target.value === text) target.value = "";
+  }, ms);
+}
 
 type Tab = "general" | "data" | "sync" | "tailscale";
 const activeTab = ref<Tab>("general");
@@ -42,10 +54,9 @@ async function saveAi() {
   try {
     await saveAiConfig({ ...ai });
     ai.api_key = "";
-    aiMsg.value = "已保存";
-    setTimeout(() => (aiMsg.value = ""), 2000);
-  } catch (err: any) {
-    aiMsg.value = `保存失败: ${err}`;
+    flash(aiMsg, "已保存");
+  } catch (err) {
+    aiMsg.value = `保存失败: ${errorText(err)}`;
   }
 }
 
@@ -98,8 +109,8 @@ async function doExport() {
   try {
     const path = await exportToFile();
     if (path) dataMsg.value = `已导出到 ${path}`;
-  } catch (err: any) {
-    dataMsg.value = `导出失败: ${err}`;
+  } catch (err) {
+    dataMsg.value = `导出失败: ${errorText(err)}`;
   }
 }
 
@@ -115,9 +126,11 @@ async function doImport(e: Event) {
   try {
     const count = await importData(text);
     dataMsg.value = `成功导入 ${count} 个任务`;
-    setTimeout(() => (dataMsg.value = ""), 3000);
-  } catch (err: any) {
-    dataMsg.value = `导入失败: ${err}`;
+    setTimeout(() => {
+      if (dataMsg.value.startsWith("成功导入")) dataMsg.value = "";
+    }, 3000);
+  } catch (err) {
+    dataMsg.value = `导入失败: ${errorText(err)}`;
   }
   input.value = "";
 }
@@ -126,8 +139,8 @@ async function saveWd() {
   if (!webdav.url.trim()) return;
   try {
     await saveWebdav({ ...webdav });
-  } catch (err: any) {
-    syncMsg.value = `保存失败: ${err}`;
+  } catch (err) {
+    syncMsg.value = `保存失败: ${errorText(err)}`;
     return;
   }
   if (webdav.password) webdavHasPassword.value = true;
@@ -142,8 +155,8 @@ async function doSync() {
   try {
     const r = await syncToWebdav();
     syncMsg.value = r.message;
-  } catch (e: any) {
-    syncMsg.value = `同步失败: ${e}`;
+  } catch (e) {
+    syncMsg.value = `同步失败: ${errorText(e)}`;
   } finally {
     syncing.value = false;
     setTimeout(() => (syncMsg.value = ""), 4000);
@@ -159,8 +172,25 @@ function randomSecret() {
 async function refreshTailscale() {
   peerSync.value = await getPeerSyncStatus();
   peerPort.value = peerSync.value.port || 47321;
-  if (!peerSecret.value) peerSecret.value = peerSync.value.secret;
   tailscale.value = await getTailscaleStatus();
+}
+
+// The saved secret stays in the backend until the user asks to see it; an empty input then
+// means "keep the saved one", so saving the port never needs the secret typed again.
+const canUsePeerSync = computed(
+  () => !!peerSync.value?.secret_set || peerSecret.value.trim().length >= 8,
+);
+
+async function toggleSecret() {
+  if (!peerSecret.value && peerSync.value?.secret_set) {
+    try {
+      peerSecret.value = await revealSyncSecret();
+    } catch (err) {
+      peerMsg.value = `读取已保存的密钥失败: ${errorText(err)}`;
+      return;
+    }
+  }
+  showPeerSecret.value = !showPeerSecret.value;
 }
 
 async function openTailscale() {
@@ -168,8 +198,8 @@ async function openTailscale() {
   peerMsg.value = "";
   try {
     await refreshTailscale();
-  } catch (err: any) {
-    peerMsg.value = `读取 Tailscale 状态失败: ${err}`;
+  } catch (err) {
+    peerMsg.value = `读取 Tailscale 状态失败: ${errorText(err)}`;
   }
 }
 
@@ -179,9 +209,12 @@ async function savePeer() {
   try {
     await savePeerSyncConfig(peerSecret.value.trim(), Number(peerPort.value));
     await refreshTailscale();
-    peerMsg.value = "同步配置已保存";
-  } catch (err: any) {
-    peerMsg.value = `保存失败: ${err}`;
+    // The value is saved; keep it out of the form until the user asks to see it again.
+    peerSecret.value = "";
+    showPeerSecret.value = false;
+    flash(peerMsg, "同步配置已保存");
+  } catch (err) {
+    peerMsg.value = `保存失败: ${errorText(err)}`;
   } finally {
     peerBusy.value = false;
   }
@@ -194,24 +227,26 @@ async function togglePeerListen() {
     await savePeerSyncConfig(peerSecret.value.trim(), Number(peerPort.value));
     const addr = await setPeerSyncListening(!peerSync.value?.listening);
     await refreshTailscale();
+    peerSecret.value = "";
+    showPeerSecret.value = false;
     peerMsg.value = addr ? `已开始接受同步：${addr}` : "已停止接受同步";
-  } catch (err: any) {
-    peerMsg.value = `操作失败: ${err}`;
+  } catch (err) {
+    peerMsg.value = `操作失败: ${errorText(err)}`;
     await refreshTailscale().catch(() => {});
   } finally {
     peerBusy.value = false;
   }
 }
 
+// The sync commands already reload the board before resolving, so don't load twice.
 async function syncPeer(ip: string) {
   peerBusy.value = true;
   peerMsg.value = "";
   try {
     const result = await syncWithPeer(ip);
     peerMsg.value = result.message;
-    await loadTasks();
-  } catch (err: any) {
-    peerMsg.value = `同步失败: ${err}`;
+  } catch (err) {
+    peerMsg.value = `同步失败: ${errorText(err)}`;
   } finally {
     peerBusy.value = false;
   }
@@ -223,9 +258,8 @@ async function syncPeers() {
   try {
     const result = await syncAllPeers();
     peerMsg.value = result.message;
-    await loadTasks();
-  } catch (err: any) {
-    peerMsg.value = `同步失败: ${err}`;
+  } catch (err) {
+    peerMsg.value = `同步失败: ${errorText(err)}`;
   } finally {
     peerBusy.value = false;
   }
@@ -238,8 +272,8 @@ async function doRestore() {
   try {
     const r = await restoreFromWebdav();
     syncMsg.value = r.message;
-  } catch (e: any) {
-    syncMsg.value = `恢复失败: ${e}`;
+  } catch (e) {
+    syncMsg.value = `恢复失败: ${errorText(e)}`;
   } finally {
     syncing.value = false;
     setTimeout(() => (syncMsg.value = ""), 4000);
@@ -272,11 +306,14 @@ async function doRestore() {
         <button class="tab" :class="{ active: activeTab === 'general' }" @click="activeTab = 'general'">常规</button>
         <button class="tab" :class="{ active: activeTab === 'data' }" @click="activeTab = 'data'">数据</button>
         <button class="tab" :class="{ active: activeTab === 'sync' }" @click="activeTab = 'sync'">WebDAV</button>
-        <button class="tab" :class="{ active: activeTab === 'tailscale' }" @click="openTailscale">多端</button>
+        <button v-if="!isMobile" class="tab" :class="{ active: activeTab === 'tailscale' }" @click="openTailscale">多端</button>
       </div>
 
       <div class="tab-content">
         <div v-if="activeTab === 'general'" class="pane">
+          <p v-if="settings.secrets_stored_in_plaintext" class="plaintext-warn" role="alert">
+            ⚠ 系统凭据库不可用，API Key 与 WebDAV 密码目前以明文保存在本机数据库中，请勿在公共电脑上使用。
+          </p>
           <div class="section">
             <label class="section-label">外观主题</label>
             <div class="theme-row">
@@ -346,6 +383,7 @@ async function doRestore() {
         </div>
 
         <div v-else-if="activeTab === 'sync'" class="pane">
+          <p v-if="isMobile" class="hint">手机端与桌面端之间请用 WebDAV 同步（Tailscale 直连只在桌面端可用）。</p>
           <div class="section">
             <label class="section-label">WebDAV 服务器配置</label>
             <input v-model="webdav.url" type="text" placeholder="https://dav.example.com/eisenhower/backup.json" aria-label="WebDAV 地址" />
@@ -392,15 +430,20 @@ async function doRestore() {
           <div class="section">
             <label class="section-label">同步密钥与端口</label>
             <div class="key-row">
-              <input v-model="peerSecret" :type="showPeerSecret ? 'text' : 'password'" placeholder="两端相同的密钥" />
-              <button class="btn btn-ghost btn-sm" @click="showPeerSecret = !showPeerSecret">显示</button>
+              <input
+                v-model="peerSecret"
+                :type="showPeerSecret ? 'text' : 'password'"
+                :placeholder="peerSync?.secret_set ? '已保存密钥（留空则不修改）' : '两端相同的密钥'"
+              />
+              <button class="btn btn-ghost btn-sm" title="显示已保存的密钥，或切换明文显示" @click="toggleSecret">显示</button>
               <button class="btn btn-ghost btn-sm" @click="peerSecret = randomSecret()">生成</button>
             </div>
             <input v-model.number="peerPort" type="number" min="1024" max="65535" placeholder="47321" />
             <p class="hint">默认端口 47321。Tailscale ACL 需要允许设备之间访问这个 TCP 端口。</p>
+            <p class="hint">密钥只保存在本机，输入框留空表示继续使用已保存的密钥；点「显示」可以读出当前密钥，方便填到另一台设备。</p>
             <div class="sync-row">
-              <button class="btn btn-primary btn-sm" :disabled="peerBusy || peerSecret.trim().length < 8" @click="savePeer">保存</button>
-              <button class="btn btn-ghost btn-sm" :disabled="peerBusy || peerSecret.trim().length < 8" @click="togglePeerListen">
+              <button class="btn btn-primary btn-sm" :disabled="peerBusy || !canUsePeerSync" @click="savePeer">保存</button>
+              <button class="btn btn-ghost btn-sm" :disabled="peerBusy || !canUsePeerSync" @click="togglePeerListen">
                 {{ peerSync?.listening ? "停止接受同步" : "开始接受同步" }}
               </button>
             </div>
@@ -537,6 +580,14 @@ h3 { font-size: 16px; font-weight: 700; }
 .dark-preview { background: #252830; }
 .key-row { display: flex; gap: 8px; }
 .hint { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.plaintext-warn {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--danger);
+  background: var(--danger-light);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+}
 .hint a { color: var(--primary); text-decoration: none; }
 .hint a:hover { text-decoration: underline; }
 .hint.warn-text { color: var(--warning); }

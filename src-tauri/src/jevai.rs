@@ -49,12 +49,9 @@ pub async fn classify(
         }
     });
 
-    let client = reqwest::Client::builder()
-        .timeout(TIMEOUT)
-        .build()
-        .map_err(|e| format!("无法创建网络客户端: {}", e))?;
-    let resp = client
+    let resp = crate::http::client()?
         .post(API_URL)
+        .timeout(TIMEOUT)
         .bearer_auth(api_key)
         .json(&body)
         .send()

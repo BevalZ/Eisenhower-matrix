@@ -1,5 +1,6 @@
 mod models;
 mod db;
+mod http;
 mod jevai;
 mod openai;
 mod secrets;
@@ -7,6 +8,7 @@ mod secrets;
 mod webdav;
 mod sync;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use models::*;
@@ -82,6 +84,7 @@ fn get_settings(state: tauri::State<AppState>) -> Result<Settings, String> {
         ai_model: ai.2,
         jevai_key_configured: jevai_key,
         openai_key_configured: openai_key,
+        secrets_stored_in_plaintext: secrets::stored_in_plaintext(&state.db)?,
     })
 }
 
@@ -208,10 +211,30 @@ fn get_learning_stats(state: tauri::State<AppState>) -> Result<LearningStats, St
     state.db.get_learning_stats()
 }
 
+/// Which platform the UI is running on; the board hides desktop-only affordances (the
+/// floating ball, Tailscale peer sync) when this says "android" or "ios".
+#[tauri::command]
+fn platform() -> String {
+    if cfg!(target_os = "android") {
+        "android".into()
+    } else if cfg!(target_os = "ios") {
+        "ios".into()
+    } else if cfg!(target_os = "windows") {
+        "windows".into()
+    } else if cfg!(target_os = "macos") {
+        "macos".into()
+    } else {
+        "linux".into()
+    }
+}
+
 // ---- Window / Floating Ball ----
 
 #[tauri::command]
 fn minimize_to_ball(app: tauri::AppHandle) -> Result<(), String> {
+    if cfg!(any(target_os = "android", target_os = "ios")) {
+        return Err("手机端没有悬浮球".into());
+    }
     if let Some(main) = app.get_webview_window("main") {
         main.hide().map_err(|e| e.to_string())?;
     }
@@ -245,9 +268,17 @@ async fn export_to_file(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::DialogExt;
     let json = state.db.export_all()?;
     let name = format!("eisenhower-backup-{}.json", chrono::Local::now().format("%Y-%m-%d"));
+    // The dialog blocks until the user answers and the write is plain disk I/O; both belong
+    // on a blocking thread, not on a runtime worker shared with the rest of the commands.
+    tauri::async_runtime::spawn_blocking(move || save_backup(app, name, json))
+        .await
+        .map_err(|e| format!("导出失败: {e}"))?
+}
+
+fn save_backup(app: tauri::AppHandle, name: String, json: String) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
     let Some(picked) = app
         .dialog()
         .file()
@@ -269,11 +300,17 @@ fn import_data(json: String, state: tauri::State<AppState>) -> Result<usize, Str
 
 // ---- WebDAV Sync ----
 
-#[tauri::command]
-async fn sync_to_webdav(state: tauri::State<'_, AppState>) -> Result<SyncResult, String> {
+/// Saved WebDAV connection details: (url, username, password).
+fn webdav_credentials(state: &AppState) -> Result<(String, String, String), String> {
     let url = state.db.get_setting("webdav_url")?.ok_or("未配置 WebDAV")?;
     let username = state.db.get_setting("webdav_username")?.unwrap_or_default();
     let password = secrets::get(&state.db, secrets::WEBDAV_PASSWORD)?.unwrap_or_default();
+    Ok((url, username, password))
+}
+
+#[tauri::command]
+async fn sync_to_webdav(state: tauri::State<'_, AppState>) -> Result<SyncResult, String> {
+    let (url, username, password) = webdav_credentials(&state)?;
     // Download → merge by uid (last write wins) → upload the merged result, so two
     // devices sharing one WebDAV file don't overwrite each other.
     let remote = webdav::download(&url, &username, &password).await?;
@@ -301,9 +338,7 @@ async fn sync_to_webdav(state: tauri::State<'_, AppState>) -> Result<SyncResult,
 
 #[tauri::command]
 async fn restore_from_webdav(state: tauri::State<'_, AppState>) -> Result<SyncResult, String> {
-    let url = state.db.get_setting("webdav_url")?.ok_or("未配置 WebDAV")?;
-    let username = state.db.get_setting("webdav_username")?.unwrap_or_default();
-    let password = secrets::get(&state.db, secrets::WEBDAV_PASSWORD)?.unwrap_or_default();
+    let (url, username, password) = webdav_credentials(&state)?;
     let json = webdav::download(&url, &username, &password)
         .await?
         .ok_or("WebDAV 上还没有备份文件")?;
@@ -317,8 +352,8 @@ async fn restore_from_webdav(state: tauri::State<'_, AppState>) -> Result<SyncRe
 
 
 #[tauri::command]
-fn tailscale_status() -> TailscaleStatus {
-    sync::tailscale_status()
+async fn tailscale_status() -> TailscaleStatus {
+    sync::tailscale_status().await
 }
 
 #[tauri::command]
@@ -328,10 +363,17 @@ fn peer_sync_status(state: tauri::State<AppState>) -> Result<PeerSyncStatus, Str
         listening,
         address,
         port: state.db.sync_port()?,
-        secret: state.db.get_setting("sync_secret")?.unwrap_or_default(),
+        secret_set: state.db.sync_secret_configured()?,
         device_id: state.db.device_id()?,
         last_error,
     })
+}
+
+/// Reads the shared sync secret back for the settings page. Kept separate from
+/// `peer_sync_status` so the secret is only handed over when the user asks to see it.
+#[tauri::command]
+fn reveal_sync_secret(state: tauri::State<AppState>) -> Result<String, String> {
+    state.db.require_sync_secret()
 }
 
 #[tauri::command]
@@ -367,17 +409,19 @@ async fn sync_with_peer(
     ip: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<SyncResult, String> {
-    let applied = sync_one(&state, &ip).await?;
+    // One status read serves the whole round: spawning `tailscale status` per peer is slow.
+    let status = sync::tailscale_status().await;
+    let applied = sync_one(&state, &ip, &status).await?;
     Ok(sync_message(applied))
 }
 
 #[tauri::command]
 async fn sync_all_peers(state: tauri::State<'_, AppState>) -> Result<SyncResult, String> {
-    let status = sync::tailscale_status();
+    let status = sync::tailscale_status().await;
     if !status.running {
-        return Err(if status.message.is_empty() { "Tailscale 未连接".into() } else { status.message });
+        return Err(if status.message.is_empty() { "Tailscale 未连接".into() } else { status.message.clone() });
     }
-    let peers: Vec<_> = status.peers.into_iter().filter(|peer| peer.online).collect();
+    let peers: Vec<_> = status.peers.iter().filter(|peer| peer.online).cloned().collect();
     if peers.is_empty() {
         return Err("没有其他在线的 Tailscale 设备".into());
     }
@@ -385,7 +429,7 @@ async fn sync_all_peers(state: tauri::State<'_, AppState>) -> Result<SyncResult,
     let mut total = 0usize;
     let mut failures = 0usize;
     for peer in peers {
-        match sync_one(&state, &peer.ip).await {
+        match sync_one(&state, &peer.ip, &status).await {
             Ok(count) => {
                 total += count;
                 lines.push(format!("{}：本机更新 {} 条", peer.hostname, count));
@@ -403,10 +447,17 @@ async fn sync_all_peers(state: tauri::State<'_, AppState>) -> Result<SyncResult,
     })
 }
 
-async fn sync_one(state: &AppState, ip: &str) -> Result<usize, String> {
-    let status = sync::tailscale_status();
+async fn sync_one(
+    state: &AppState,
+    ip: &str,
+    status: &TailscaleStatus,
+) -> Result<usize, String> {
     if !status.running {
-        return Err(if status.message.is_empty() { "Tailscale 未连接".into() } else { status.message });
+        return Err(if status.message.is_empty() {
+            "Tailscale 未连接".into()
+        } else {
+            status.message.clone()
+        });
     }
     if status.ip == ip {
         return Err("不能和本机同步".into());
@@ -429,15 +480,26 @@ fn sync_message(applied: usize) -> SyncResult {
     }
 }
 
+/// Directory that holds `tasks.db`.
+///
+/// Desktop keeps `dirs`' historical location so an existing install still finds its tasks
+/// after this version; mobile has no `dirs` support, so it uses the app's private data
+/// directory that Tauri derives from the Android package identifier.
+fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if let Some(base) = dirs::data_dir() {
+        return Ok(base.join("eisenhower-matrix"));
+    }
+    app.path()
+        .app_data_dir()
+        .map_err(|e| format!("无法确定应用数据目录: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState {
-            db: Arc::new(Db::open().expect("failed to open database")),
-            sync: Arc::new(SyncControl::new()),
-        })
         .invoke_handler(tauri::generate_handler![
             get_tasks,
             create_task,
@@ -466,23 +528,32 @@ pub fn run() {
             restore_from_ball,
             tailscale_status,
             peer_sync_status,
+            reveal_sync_secret,
             save_peer_sync,
             set_peer_sync_listening,
             sync_with_peer,
             sync_all_peers,
+            platform,
         ])
         .setup(|app| {
+            // The database is opened here rather than while building the app, because the
+            // mobile data directory is only known once the app handle exists.
+            let dir = data_dir(app.handle())?;
+            let db = Arc::new(Db::open(dir.join("tasks.db"))?);
             sync::set_app(app.handle().clone());
-            let state = app.state::<AppState>();
+            let sync = Arc::new(SyncControl::new());
+            app.manage(AppState {
+                db: Arc::clone(&db),
+                sync: Arc::clone(&sync),
+            });
             // Moving old plaintext secrets may wait on the OS keyring; keep it off the UI thread.
-            let db = Arc::clone(&state.db);
-            std::thread::spawn(move || secrets::migrate(&db));
-            let enabled = state.db.get_setting("sync_listen").unwrap_or(None);
+            let migrate_db = Arc::clone(&db);
+            std::thread::spawn(move || secrets::migrate(&migrate_db));
+            let enabled = db.get_setting("sync_listen").unwrap_or(None);
             if enabled.as_deref() == Some("1") {
-                let db = Arc::clone(&state.db);
-                let sync = Arc::clone(&state.sync);
+                let listen_db = Arc::clone(&db);
                 tauri::async_runtime::spawn(async move {
-                    let _ = sync.start(db).await;
+                    let _ = sync.start(listen_db).await;
                 });
             }
             Ok(())

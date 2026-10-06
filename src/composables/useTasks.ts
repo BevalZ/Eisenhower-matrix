@@ -160,7 +160,14 @@ function learnFromMove(task: Task, from: Quadrant, to: Quadrant) {
 async function updateTask(input: TaskUpdate) {
   const task = tasks.value.find((t) => t.id === input.id);
   if (!task) return;
-  const prev = { title: task.title, description: task.description, quadrant: task.quadrant, priority: task.priority };
+  // Snapshot every field the write touches, so a failed save restores all of them.
+  const prev = {
+    title: task.title,
+    description: task.description,
+    quadrant: task.quadrant,
+    priority: task.priority,
+    due_at: task.due_at,
+  };
   Object.assign(task, { ...input, title: input.title.trim() });
   try {
     await invoke("update_task", { input });
@@ -279,6 +286,11 @@ async function savePeerSyncConfig(secret: string, port: number) {
   await invoke("save_peer_sync", { config: { secret, port } });
 }
 
+/** Read the saved shared secret back; the settings page asks for it on demand only. */
+async function revealSyncSecret(): Promise<string> {
+  return await invoke<string>("reveal_sync_secret");
+}
+
 async function setPeerSyncListening(enabled: boolean): Promise<string> {
   return await invoke<string>("set_peer_sync_listening", { enabled });
 }
@@ -297,8 +309,16 @@ async function syncAllPeers(): Promise<SyncResult> {
 
 const sortedTasks = computed(() => [...tasks.value].sort(compareTasks));
 
+/** Board order, grouped once per change instead of re-filtering the list on every read. */
+const byQuadrant = computed<Record<Quadrant, Task[]>>(() => {
+  const out: Record<Quadrant, Task[]> = { 1: [], 2: [], 3: [], 4: [] };
+  for (const task of sortedTasks.value) out[task.quadrant].push(task);
+  return out;
+});
+
+/** Read-only view of one quadrant in board order; never mutate the returned array. */
 function tasksByQuadrant(q: Quadrant): Task[] {
-  return sortedTasks.value.filter((t) => t.quadrant === q);
+  return byQuadrant.value[q];
 }
 
 let remoteWatchStarted = false;
@@ -349,6 +369,7 @@ export function useTasks() {
     getTailscaleStatus,
     getPeerSyncStatus,
     savePeerSyncConfig,
+    revealSyncSecret,
     setPeerSyncListening,
     syncWithPeer,
     syncAllPeers,

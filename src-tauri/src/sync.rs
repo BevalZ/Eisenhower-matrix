@@ -1,5 +1,4 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::process::Command;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -28,7 +27,12 @@ fn notify_tasks_changed() {
 }
 
 const MAX_HEADER: usize = 64 * 1024;
-const MAX_BODY: usize = 2 * 1024 * 1024;
+/// A full task history is shipped in one payload, so this has to fit a long one: roughly
+/// 70k rows of ~220 bytes. Beyond that the peer reports the error instead of failing silently.
+const MAX_BODY: usize = 16 * 1024 * 1024;
+/// A hung `tailscale` binary must not stall a sync round for good.
+const TAILSCALE_TIMEOUT: Duration = Duration::from_secs(5);
+const TOO_LARGE: &str = "同步数据过大（超过 16MB）。请先用「清除已完成」清理历史任务，或改用 WebDAV 同步。";
 
 pub struct SyncControl {
     running: std::sync::Mutex<Option<Running>>,
@@ -66,7 +70,7 @@ impl SyncControl {
 
     pub async fn start(&self, db: Arc<Db>) -> Result<String, String> {
         self.stop().await;
-        let snapshot = tailscale_status();
+        let snapshot = tailscale_status().await;
         if !snapshot.running || snapshot.ip.is_empty() {
             let message = if snapshot.message.is_empty() {
                 "Tailscale 未连接".into()
@@ -158,8 +162,8 @@ impl SyncControl {
     }
 }
 
-pub fn tailscale_status() -> TailscaleStatus {
-    match tailscale_status_json() {
+pub async fn tailscale_status() -> TailscaleStatus {
+    match tailscale_status_json().await {
         Ok(raw) => parse_status(&raw),
         Err(message) => TailscaleStatus {
             running: false,
@@ -181,16 +185,19 @@ pub async fn exchange(db: &Db, ip: &str, port: u16) -> Result<usize, String> {
         tasks: db.sync_snapshot()?,
         schema: SYNC_SCHEMA,
     };
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| format!("无法创建网络客户端: {e}"))?;
+    // Report an oversized history locally instead of letting the peer answer 400.
+    let body = serde_json::to_vec(&envelope).map_err(|e| e.to_string())?;
+    if body.len() > MAX_BODY {
+        return Err(TOO_LARGE.into());
+    }
+    let client = crate::http::client_no_redirect()?;
     let url = format!("http://{ip}:{port}/v1/sync");
     let response = client
         .post(&url)
+        .timeout(Duration::from_secs(60))
         .bearer_auth(secret)
-        .json(&envelope)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body)
         .send()
         .await
         .map_err(|_| {
@@ -216,7 +223,7 @@ pub async fn exchange(db: &Db, ip: &str, port: u16) -> Result<usize, String> {
 }
 
 async fn sync_online(db: &Db) -> Result<(), String> {
-    let status = tailscale_status();
+    let status = tailscale_status().await;
     if !status.running {
         return Err(if status.message.is_empty() {
             "Tailscale 未连接".into()
@@ -242,6 +249,14 @@ async fn sync_online(db: &Db) -> Result<(), String> {
     }
 }
 
+/// Mobile has no `tailscale` CLI to ask, and the Tailscale app does not expose its peer list,
+/// so peer-to-peer sync is desktop-only; the settings page points mobile at WebDAV instead.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+async fn tailscale_status_json() -> Result<String, String> {
+    Err("手机端暂不支持 Tailscale 直连同步，请使用 WebDAV 同步".into())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn tailscale_bins() -> Vec<String> {
     let mut bins = vec!["tailscale".to_string()];
     #[cfg(target_os = "macos")]
@@ -262,30 +277,35 @@ fn tailscale_bins() -> Vec<String> {
     bins
 }
 
-fn tailscale_status_json() -> Result<String, String> {
+/// Runs `tailscale status --json` off the async workers: the old `std::process` call blocked
+/// a runtime thread for the whole run, and a hung binary could freeze a sync round forever.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+async fn tailscale_status_json() -> Result<String, String> {
     let mut last_error = "未找到 Tailscale".to_string();
     for bin in tailscale_bins() {
-        let mut cmd = Command::new(&bin);
+        let mut cmd = tokio::process::Command::new(&bin);
         cmd.args(["status", "--json"]);
+        // Leaving the child behind on timeout would keep it running for the rest of the session.
+        cmd.kill_on_drop(true);
         // A GUI app that spawns a console program gets a console window unless told otherwise;
         // with auto-sync every 45 s that window would flash repeatedly.
         #[cfg(target_os = "windows")]
         {
-            use std::os::windows::process::CommandExt;
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        match cmd.output() {
-            Ok(output) if output.status.success() => {
+        match tokio::time::timeout(TAILSCALE_TIMEOUT, cmd.output()).await {
+            Ok(Ok(output)) if output.status.success() => {
                 return String::from_utf8(output.stdout)
                     .map_err(|_| "Tailscale 输出不是 UTF-8".to_string());
             }
-            Ok(output) => {
+            Ok(Ok(output)) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 last_error = format!("{bin} 执行失败：{}{}", stderr.trim(), stdout.trim());
             }
-            Err(err) => last_error = format!("{bin}：{err}"),
+            Ok(Err(err)) => last_error = format!("{bin}：{err}"),
+            Err(_) => last_error = format!("{bin} 执行超时"),
         }
     }
     Err(format!(
@@ -400,14 +420,18 @@ async fn run_server(listener: TcpListener, db: Arc<Db>, mut stop: watch::Receive
 }
 
 async fn handle_socket(mut socket: tokio::net::TcpStream, db: Arc<Db>) -> Result<(), String> {
-    let request = read_request(&mut socket).await?;
-    let response = match dispatch(&db, &request).await {
-        Ok(body) => http_response("200 OK", "application/json", &body),
-        Err(err) => {
-            let status = if err == "unauthorized" { "401 Unauthorized" } else { "400 Bad Request" };
-            let message = if err == "unauthorized" { "同步密钥不匹配" } else { &err };
-            http_response(status, "text/plain; charset=utf-8", message)
-        }
+    let response = match read_request(&mut socket).await {
+        // Always answer, even for a malformed request: closing silently would leave the
+        // peer waiting for its own timeout instead of reporting why the sync failed.
+        Err(err) => http_response("400 Bad Request", "text/plain; charset=utf-8", &err),
+        Ok(request) => match dispatch(&db, &request).await {
+            Ok(body) => http_response("200 OK", "application/json", &body),
+            Err(err) => {
+                let status = if err == "unauthorized" { "401 Unauthorized" } else { "400 Bad Request" };
+                let message = if err == "unauthorized" { "同步密钥不匹配" } else { &err };
+                http_response(status, "text/plain; charset=utf-8", message)
+            }
+        },
     };
     let _ = tokio::time::timeout(Duration::from_secs(15), socket.write_all(response.as_bytes())).await;
     Ok(())
@@ -450,6 +474,7 @@ struct HttpRequest {
 async fn read_request(socket: &mut tokio::net::TcpStream) -> Result<HttpRequest, String> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
+    let mut searched = 0usize;
     let header_end = loop {
         let read = tokio::time::timeout(Duration::from_secs(15), socket.read(&mut tmp))
             .await
@@ -459,9 +484,13 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Result<HttpRequest,
             return Err("连接已关闭".into());
         }
         buf.extend_from_slice(&tmp[..read]);
-        if let Some(index) = find_subsequence(&buf, b"\r\n\r\n") {
-            break index;
+        // Only the bytes that just arrived can complete the terminator; rescanning the whole
+        // buffer every round would be O(n²) for a large header. Overlap by 3 for a split match.
+        let from = searched.saturating_sub(3);
+        if let Some(index) = find_subsequence(&buf[from..], b"\r\n\r\n") {
+            break from + index;
         }
+        searched = buf.len();
         if buf.len() > MAX_HEADER {
             return Err("请求头过大".into());
         }
@@ -485,7 +514,7 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Result<HttpRequest,
         }
     }
     if content_length > MAX_BODY {
-        return Err("同步数据过大".into());
+        return Err(TOO_LARGE.into());
     }
     let body_start = header_end + 4;
     while buf.len() < body_start + content_length {
@@ -498,7 +527,7 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Result<HttpRequest,
         }
         buf.extend_from_slice(&tmp[..read]);
         if buf.len() > body_start + MAX_BODY {
-            return Err("同步数据过大".into());
+            return Err(TOO_LARGE.into());
         }
     }
     let body = buf[body_start..body_start + content_length].to_vec();

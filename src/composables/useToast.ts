@@ -27,15 +27,25 @@ function show(
   opts: { kind?: Toast["kind"]; action?: ToastAction; duration?: number } = {},
 ): number {
   const id = nextId++;
-  toasts.value = [...toasts.value.slice(-3), { id, message, kind: opts.kind ?? "info", action: opts.action }];
+  // Only the newest four stay on screen; drop the evicted one's timer with it.
+  const kept = toasts.value.slice(-3);
+  for (const evicted of toasts.value.slice(0, -3)) {
+    clearTimeout(timers.get(evicted.id));
+    timers.delete(evicted.id);
+  }
+  toasts.value = [...kept, { id, message, kind: opts.kind ?? "info", action: opts.action }];
   const duration = opts.duration ?? (opts.action ? 6000 : 3500);
   timers.set(id, setTimeout(() => dismiss(id), duration));
   return id;
 }
 
+/** Text for a rejected `invoke` (Tauri rejects with a plain string, not an Error). */
+export function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 function showError(prefix: string, err: unknown) {
-  const detail = err instanceof Error ? err.message : String(err);
-  show(`${prefix}：${detail}`, { kind: "error", duration: 6000 });
+  show(`${prefix}：${errorText(err)}`, { kind: "error", duration: 6000 });
 }
 
 export function useToast() {

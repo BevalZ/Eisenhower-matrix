@@ -60,6 +60,9 @@
         "installMode": "both",
         "languages": ["SimpChinese", "English"]
       }
+    },
+    "android": {
+      "minSdkVersion": 24
     }
   }
 }

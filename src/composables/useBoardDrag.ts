@@ -1,17 +1,18 @@
 import { nextTick, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import type { Quadrant, Task } from "../types";
 import {
+  TOUCH_HOLD_MS,
   clampIndex,
   edgeScrollSpeed,
   indexFromPointer,
   pickQuadrant,
   planDrop,
+  touchIntent,
   type TaskMove,
   type ZoneRect,
 } from "../ordering";
 
 const MOUSE_THRESHOLD = 4;
-const TOUCH_THRESHOLD = 8;
 const SETTLE_MS = 180;
 
 export interface DropSlot {
@@ -56,6 +57,13 @@ export function useBoardDrag(opts: Options) {
   let origin: DropSlot | null = null;
   let raf = 0;
   let unlock: (() => void) | null = null;
+  // Touch gestures that start on a card either scroll the list or drag the card; cards set
+  // `touch-action: none` (so the browser never steals the gesture), which means the board
+  // has to scroll the list itself until the hold timer arms a drag.
+  let gesture: "pending" | "drag" | "scroll" = "drag";
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
+  let scrollHost: HTMLElement | null = null;
+  let lastY = 0;
 
   function setZone(q: Quadrant, el: unknown) {
     if (el instanceof HTMLElement) zones.set(q, el);
@@ -76,7 +84,17 @@ export function useBoardDrag(opts: Options) {
     pointerId = e.pointerId;
     pointerType = e.pointerType;
     startX = x = e.clientX;
-    startY = y = e.clientY;
+    startY = y = lastY = e.clientY;
+    if (pressedWithMouse()) {
+      gesture = "drag";
+    } else {
+      gesture = "pending";
+      scrollHost = scrollableAncestor(card);
+      holdTimer = setTimeout(() => {
+        holdTimer = undefined;
+        if (gesture === "pending") start();
+      }, TOUCH_HOLD_MS);
+    }
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
     window.addEventListener("pointercancel", onPointerCancel);
@@ -87,12 +105,50 @@ export function useBoardDrag(opts: Options) {
     x = e.clientX;
     y = e.clientY;
     if (!dragging.value) {
-      const threshold = pointerType === "mouse" ? MOUSE_THRESHOLD : TOUCH_THRESHOLD;
-      if (Math.hypot(x - startX, y - startY) < threshold) return;
-      start();
+      if (pressedWithMouse()) {
+        if (Math.hypot(x - startX, y - startY) < MOUSE_THRESHOLD) return;
+        start();
+      } else {
+        if (gesture === "pending" && touchIntent(Math.hypot(x - startX, y - startY), false) === "scroll") {
+          // A quick swipe scrolls the list; the hold timer must not fire mid-scroll.
+          gesture = "scroll";
+          clearHold();
+        }
+        if (gesture === "scroll") {
+          scrollBy(-(y - lastY));
+          lastY = y;
+          return;
+        }
+        if (gesture !== "drag") return;
+      }
     }
     e.preventDefault();
     schedule();
+  }
+
+  function pressedWithMouse(): boolean {
+    return pointerType === "mouse";
+  }
+
+  function clearHold() {
+    if (holdTimer === undefined) return;
+    clearTimeout(holdTimer);
+    holdTimer = undefined;
+  }
+
+  function scrollBy(delta: number) {
+    const host = scrollHost ?? document.scrollingElement;
+    if (host) host.scrollTop += delta;
+  }
+
+  /** Nearest ancestor that can actually scroll; the card's own quadrant list in practice. */
+  function scrollableAncestor(el: HTMLElement | null): HTMLElement | null {
+    for (let node = el?.parentElement ?? null; node; node = node.parentElement) {
+      if (node.scrollHeight <= node.clientHeight + 1) continue;
+      const overflowY = getComputedStyle(node).overflowY;
+      if (overflowY === "auto" || overflowY === "scroll") return node;
+    }
+    return null;
   }
 
   function start() {
@@ -182,6 +238,11 @@ export function useBoardDrag(opts: Options) {
 
   async function onPointerUp(e: PointerEvent) {
     if (e.pointerId !== pointerId) return;
+    if (gesture === "scroll") {
+      // The gesture only scrolled a list; no card was picked up and nothing is committed.
+      reset();
+      return;
+    }
     const task = dragging.value;
     if (!task) {
       reset();
@@ -241,6 +302,7 @@ export function useBoardDrag(opts: Options) {
     cancelAnimationFrame(raf);
     raf = 0;
     removePointerListeners();
+    clearHold();
     window.removeEventListener("keydown", onKeyDown, true);
     window.removeEventListener("blur", onBlur);
     document.documentElement.classList.remove("board-dragging");
@@ -256,6 +318,8 @@ export function useBoardDrag(opts: Options) {
     pointerId = -1;
     settling.value = false;
     outside.value = false;
+    scrollHost = null;
+    gesture = "drag";
     // Remote refreshes resume only after the drop is saved, so they cannot undo it.
     const release = unlock;
     unlock = null;
@@ -264,8 +328,11 @@ export function useBoardDrag(opts: Options) {
 
   function reset() {
     removePointerListeners();
+    clearHold();
     pending = null;
     pointerId = -1;
+    scrollHost = null;
+    gesture = "drag";
   }
 
   function removePointerListeners() {

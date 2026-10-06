@@ -10,6 +10,7 @@ import {
   type ClassificationResult,
 } from "../types";
 import { fromLocalInput, quickDue, toLocalInput, dueLabel, parseDueText, type QuickDue } from "../due";
+import { errorText } from "../composables/useToast";
 import {
   IMPACT_CHOICES,
   DUE_CHOICES,
@@ -209,7 +210,7 @@ async function runClassification() {
       "ai",
       `分析完成！这个任务属于「${QUADRANT_META[result.value.quadrant].name}」，综合优先级 ${Math.round(result.value.priority)} 分。请确认或调整后保存。`
     );
-  } catch (e: any) {
+  } catch (e) {
     // Fall back to a guess from the tapped answers; scores stay UNSCORED so a
     // later move isn't learned as a correction of the AI.
     aiClassified.value = false;
@@ -222,7 +223,7 @@ async function runClassification() {
     manualPriority.value = DEFAULT_PRIORITY[quadrant];
     pushMsg(
       "ai",
-      `AI 分析不可用（${e}）。\n根据你的选择，建议放在「${QUADRANT_META[quadrant].name}」，可在下方调整后保存。`
+      `AI 分析不可用（${errorText(e)}）。\n根据你的选择，建议放在「${QUADRANT_META[quadrant].name}」，可在下方调整后保存。`
     );
   } finally {
     analyzing.value = false;

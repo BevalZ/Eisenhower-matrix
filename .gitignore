@@ -7,6 +7,11 @@ dist-ssr
 src-tauri/target
 src-tauri/gen
 
+# Android signing material must never be committed
+src-tauri/gen/android/keystore.properties
+*.jks
+*.keystore
+
 # Editor
 .vscode/*
 !.vscode/extensions.json

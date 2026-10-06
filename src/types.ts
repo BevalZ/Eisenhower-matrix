@@ -52,6 +52,8 @@ export interface Settings {
   ai_model?: string;
   jevai_key_configured?: boolean;
   openai_key_configured?: boolean;
+  /** The OS credential store was unavailable, so secrets sit in the local database. */
+  secrets_stored_in_plaintext?: boolean;
 }
 
 export interface AiConfig {
@@ -99,7 +101,8 @@ export interface PeerSyncStatus {
   listening: boolean;
   address: string;
   port: number;
-  secret: string;
+  /** The shared secret is not sent with the status; ask for it explicitly to read it. */
+  secret_set: boolean;
   device_id: string;
   last_error: string;
 }

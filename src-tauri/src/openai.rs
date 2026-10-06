@@ -31,11 +31,7 @@ pub async fn classify(
             { "role": "user", "content": format!("Today is {today}.\n\n{description}") }
         ]
     });
-    let client = reqwest::Client::builder()
-        .timeout(TIMEOUT)
-        .build()
-        .map_err(|e| format!("无法创建网络客户端: {e}"))?;
-    let mut req = client.post(&url).json(&body);
+    let mut req = crate::http::client()?.post(&url).timeout(TIMEOUT).json(&body);
     if let Some(key) = api_key.filter(|k| !k.is_empty()) {
         req = req.bearer_auth(key);
     }

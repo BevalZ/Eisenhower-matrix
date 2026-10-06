@@ -3,6 +3,7 @@ import type { Quadrant, Task } from "./types";
 import {
   PRIORITY_MAX,
   PRIORITY_MIN,
+  TOUCH_SLOP,
   clampIndex,
   compareTasks,
   edgeScrollSpeed,
@@ -10,6 +11,7 @@ import {
   naturalIndex,
   pickQuadrant,
   planDrop,
+  touchIntent,
   type TaskMove,
 } from "./ordering";
 
@@ -172,5 +174,17 @@ describe("pointer helpers", () => {
     expect(edgeScrollSpeed(30, 0, 400)).toBeLessThan(0);
     expect(edgeScrollSpeed(0, 0, 400)).toBe(-14);
     expect(edgeScrollSpeed(399, 0, 400)).toBeGreaterThan(edgeScrollSpeed(370, 0, 400));
+  });
+
+  it("decides between scrolling and dragging for a touch gesture", () => {
+    // Nothing decided yet: a resting finger and jitter under the slop.
+    expect(touchIntent(0, false)).toBe("pending");
+    expect(touchIntent(TOUCH_SLOP, false)).toBe("pending");
+    // A swipe scrolls the list until the long press arms the drag.
+    expect(touchIntent(TOUCH_SLOP + 1, false)).toBe("scroll");
+    expect(touchIntent(60, false)).toBe("scroll");
+    // Once the hold timer armed the gesture, movement drags no matter how far.
+    expect(touchIntent(0, true)).toBe("drag");
+    expect(touchIntent(120, true)).toBe("drag");
   });
 });

@@ -102,6 +102,7 @@
 | Windows | NSIS 安装版 / 便携版 `.exe` | `Eisenhower Matrix_*_x64-setup.exe` / `*_x64_portable.exe` |
 | macOS | `.dmg` | `Eisenhower-Matrix_*.dmg` |
 | Linux | `.deb` / `.AppImage` | `eisenhower-matrix_*.deb` |
+| Android | `.apk`（测试包见 Actions Artifacts） | `app-*-release.apk` / `app-*-debug.apk` |
 
 > **macOS 提示**：首次打开若提示"无法验证开发者"，请到「系统设置 → 隐私与安全性」点击「仍要打开」。
 
@@ -147,6 +148,49 @@ npm run tauri build
 ### 不在本地构建：用 GitHub Actions 出测试包
 
 推送到 `main` 以外的任意分支，`Test Build` 工作流会先跑类型检查和单元测试，再打出 Windows 安装版和便携版，放在该次运行页面底部的 **Artifacts** 里（保留 14 天）。需要 macOS / Linux 包时，在 Actions 页面手动运行 `Test Build` 并勾选 “Also build macOS and Linux”。正式发布仍然是推送 `v*` tag 触发 `Release`。
+
+### Android 端
+
+Android 包同样完全在 GitHub Actions 上构建，本地不需要 Android SDK / NDK / JDK：
+
+1. 推到 `main`、`feat/**` 分支，推送 `v*` tag，或在 Actions 页面手动运行 `Android` 工作流；
+2. 运行结束后在 **Artifacts** 下载 `android-<sha>`，里面是 APK（配置了签名密钥时同时产出 AAB）；推送 tag 时还会自动附加到对应 Release。
+
+| 情况 | 产物 | 用途 |
+|------|------|------|
+| 未配置签名密钥 | `*-debug.apk` | 调试签名，可直接安装测试 |
+| 已配置签名密钥 | 已签名的 `*.apk` + `*.aab` | 长期分发 / 上架 Google Play |
+
+#### 配置正式签名（可选）
+
+在任意装有 JDK 的机器上生成上传密钥：
+
+```bash
+keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+
+# Linux / macOS：导出 base64
+base64 -w0 upload-keystore.jks > keystore.b64
+# Windows PowerShell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("upload-keystore.jks")) | Set-Content keystore.b64
+```
+
+在仓库 **Settings → Secrets and variables → Actions** 添加四个 Secret：
+
+| Secret | 内容 |
+|--------|------|
+| `ANDROID_KEY_BASE64` | `keystore.b64` 的全部内容（一行） |
+| `ANDROID_KEY_ALIAS` | `upload` |
+| `ANDROID_STORE_PASSWORD` | keystore 口令 |
+| `ANDROID_KEY_PASSWORD` | 密钥口令（通常与上面相同） |
+
+> keystore 与口令就是你的签名身份：泄露后别人可以签出被系统当作升级包安装的 APK。只放进 Secrets，不要提交进仓库。
+
+#### 手机端与桌面端的差异
+
+- **同步**：手机端没有 `tailscale` 命令，多端直连同步只在桌面端可用；手机请用 **WebDAV 同步**。
+- **密钥存储**：Android 上没有系统凭据库，API Key / WebDAV 密码保存在应用私有目录的数据库里，设置页会明确提示「明文保存」。
+- **悬浮球**：属于桌面窗口形态，手机端不显示。
+- **触屏操作**：上下滑动列表 = 滚动；按住卡片约 0.26 秒后再拖动 = 移动 / 排序；点按卡片仍可编辑、切换完成。
 
 ## 快捷键
 

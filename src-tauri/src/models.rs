@@ -71,6 +71,8 @@ pub struct Settings {
     pub ai_model: String,
     pub jevai_key_configured: bool,
     pub openai_key_configured: bool,
+    /// The OS credential store was unavailable and a secret had to be kept in the database.
+    pub secrets_stored_in_plaintext: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,7 +186,9 @@ pub struct PeerSyncStatus {
     pub listening: bool,
     pub address: String,
     pub port: u16,
-    pub secret: String,
+    /// The shared secret itself is never part of this payload; the settings page asks for it
+    /// explicitly with `reveal_sync_secret` when the user wants to read it.
+    pub secret_set: bool,
     pub device_id: String,
     pub last_error: String,
 }

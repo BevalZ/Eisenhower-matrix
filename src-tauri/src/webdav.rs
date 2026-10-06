@@ -15,12 +15,8 @@ pub fn validate_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(TIMEOUT)
-        .build()
-        .map_err(|e| format!("无法创建网络客户端: {}", e))
+fn client() -> Result<&'static reqwest::Client, String> {
+    crate::http::client_no_redirect()
 }
 
 fn status_error(status: reqwest::StatusCode) -> String {
@@ -41,6 +37,7 @@ pub async fn upload(url: &str, username: &str, password: &str, body: String) -> 
     let client = client()?;
     let resp = client
         .put(url.trim())
+        .timeout(TIMEOUT)
         .basic_auth(username, Some(password))
         .header("Content-Type", "application/json")
         .body(body)
@@ -60,6 +57,7 @@ pub async fn download(url: &str, username: &str, password: &str) -> Result<Optio
     let client = client()?;
     let resp = client
         .get(url.trim())
+        .timeout(TIMEOUT)
         .basic_auth(username, Some(password))
         .send()
         .await

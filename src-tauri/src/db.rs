@@ -10,8 +10,10 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn open() -> Result<Self, String> {
-        let path = db_path()?;
+    /// `path` is resolved by the caller: the desktop keeps its historical `dirs` location so
+    /// an existing install still finds its tasks, while mobile uses the app's private data
+    /// directory (resolved through Tauri, which knows the Android package).
+    pub fn open(path: PathBuf) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -78,6 +80,7 @@ impl Db {
         .map_err(|e| e.to_string())?;
 
         ensure_sync_columns(&conn)?;
+        prune_tombstones(&conn)?;
         Ok(())
     }
 
@@ -183,8 +186,11 @@ impl Db {
             if !task.uid.is_empty() && !seen_uids.insert(task.uid.clone()) {
                 return Err(format!("备份中存在重复任务 uid: {}", task.uid));
             }
+            validate_text(&task.title, &task.description)?;
             validate_quadrant(task.quadrant)?;
             validate_priority(task.priority)?;
+            validate_due(task.due_at)?;
+            validate_import_times(task)?;
             validate_unit_score("重要性", task.importance_score)?;
             validate_unit_score("紧急性", task.urgency_score)?;
         }
@@ -349,7 +355,9 @@ impl Db {
                 params![id],
                 |r| r.get(0),
             )
-            .map_err(|e| e.to_string())?;
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or("任务不存在或已被删除")?;
         let new_done = 1 - done;
         let now = Utc::now().timestamp_millis();
         let completed_at = if new_done == 1 { Some(now) } else { None };
@@ -479,72 +487,83 @@ impl Db {
     pub fn get_stats(&self) -> Result<StatsSummary, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
-        let total: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL OR done = 1",
-                params![],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        let done: i64 = conn
-            .query_row("SELECT COUNT(*) FROM tasks WHERE done = 1", params![], |r| r.get(0))
-            .map_err(|e| e.to_string())?;
+        // One grouped pass covers the totals and every quadrant. A cleared task keeps its row
+        // as a finished tombstone, so it still counts; an abandoned unfinished task does not.
+        let mut by_quadrant = std::collections::HashMap::new();
+        let (mut total, mut done) = (0i64, 0i64);
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT quadrant, COUNT(*), COALESCE(SUM(done), 0)
+                     FROM tasks
+                     WHERE deleted_at IS NULL OR done = 1
+                     GROUP BY quadrant",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (q, qtotal, qdone) = row.map_err(|e| e.to_string())?;
+                total += qtotal;
+                done += qdone;
+                by_quadrant.insert(q, QuadrantStat { total: qtotal, done: qdone });
+            }
+        }
+        for q in 1..=4i64 {
+            by_quadrant.entry(q).or_insert(QuadrantStat { total: 0, done: 0 });
+        }
         let pending = total - done;
         let rate = if total > 0 { done as f64 / total as f64 } else { 0.0 };
 
-        let mut by_quadrant = std::collections::HashMap::new();
-        for q in 1..=4i64 {
-            let qtotal: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM tasks WHERE quadrant = ?1 AND (deleted_at IS NULL OR done = 1)",
-                    params![q],
-                    |r| r.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            let qdone: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM tasks WHERE quadrant = ?1 AND done = 1",
-                    params![q],
-                    |r| r.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            by_quadrant.insert(q, QuadrantStat { total: qtotal, done: qdone });
-        }
-
-        // Last 7 local days. A calendar day is not always 86_400_000 ms.
-        let mut recent = Vec::new();
+        // Last 7 local days. A calendar day is not always 86_400_000 ms, so bucket by date
+        // rather than by fixed offsets. The same rows also answer the weekly review.
         let today = Local::now().date_naive();
-        for i in (0..7).rev() {
-            let date = today - chrono::Duration::days(i);
-            let start_ms = local_midnight_ms(date)?;
-            let next = date.succ_opt().ok_or("日期溢出")?;
-            let end_ms = local_midnight_ms(next)?;
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM tasks WHERE done = 1 AND completed_at >= ?1 AND completed_at < ?2",
-                    params![start_ms, end_ms],
-                    |r| r.get(0),
+        let first = today - chrono::Duration::days(6);
+        let week_start = local_midnight_ms(first)?;
+        let mut per_day = [0i64; 7];
+        let mut week_by_quadrant: std::collections::HashMap<i64, i64> =
+            (1..=4i64).map(|q| (q, 0i64)).collect();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT quadrant, completed_at
+                     FROM tasks
+                     WHERE done = 1 AND completed_at IS NOT NULL AND completed_at >= ?1",
                 )
                 .map_err(|e| e.to_string())?;
-            recent.push(DailyCount {
-                date: date.format("%m-%d").to_string(),
-                count,
-            });
+            let rows = stmt
+                .query_map(params![week_start], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (q, completed_at) = row.map_err(|e| e.to_string())?;
+                *week_by_quadrant.entry(q).or_insert(0) += 1;
+                if let Some(dt) = Local.timestamp_millis_opt(completed_at).single() {
+                    let offset = (dt.date_naive() - first).num_days();
+                    if (0..7).contains(&offset) {
+                        per_day[offset as usize] += 1;
+                    }
+                }
+            }
         }
+        let recent_completed = (0..7)
+            .map(|i| {
+                let date = first + chrono::Duration::days(i);
+                DailyCount {
+                    date: date.format("%m-%d").to_string(),
+                    count: per_day[i as usize],
+                }
+            })
+            .collect();
 
-        // Where last week's finished work came from (Q2 share = time spent on what matters).
-        let week_start = local_midnight_ms(today - chrono::Duration::days(6))?;
-        let mut week_by_quadrant = std::collections::HashMap::new();
-        for q in 1..=4i64 {
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM tasks WHERE done = 1 AND quadrant = ?1 AND completed_at >= ?2",
-                    params![q, week_start],
-                    |r| r.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            week_by_quadrant.insert(q, count);
-        }
         let overdue: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM tasks
@@ -560,7 +579,7 @@ impl Db {
             pending,
             completion_rate: rate,
             by_quadrant,
-            recent_completed: recent,
+            recent_completed,
             week_by_quadrant,
             overdue,
         })
@@ -604,16 +623,14 @@ impl Db {
     /// Returns (importance_bias, urgency_bias) — how much to shift future AI scores.
     pub fn get_calibration_bias(&self) -> Result<(f64, f64), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        calibration_bias(&conn)
+        let (_, imp_bias, urg_bias) = feedback_calibration(&conn)?;
+        Ok((imp_bias, urg_bias))
     }
 
     pub fn get_learning_stats(&self) -> Result<LearningStats, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM feedback", params![], |r| r.get(0))
-            .map_err(|e| e.to_string())?;
-
-        let (imp_bias, urg_bias) = calibration_bias(&conn)?;
+        // Count and both averages come from the same pass over the feedback table.
+        let (total, imp_bias, urg_bias) = feedback_calibration(&conn)?;
 
         let correct: i64 = conn
             .query_row(
@@ -676,16 +693,23 @@ impl Db {
         }
     }
 
+    /// An empty `secret` keeps the saved one, so the settings page can save a new port (or
+    /// start listening) without the user having to type the shared secret again. The secret
+    /// itself is never sent to the UI unasked.
     pub fn save_sync_config(&self, secret: &str, port: u16) -> Result<(), String> {
         let secret = secret.trim();
+        if !(1024..=65535).contains(&port) {
+            return Err("端口需要在 1024 到 65535 之间".into());
+        }
+        if secret.is_empty() {
+            self.require_sync_secret()?;
+            return self.set_setting("sync_port", &port.to_string());
+        }
         if secret.len() < 8 || secret.len() > 128 {
             return Err("同步密钥需要 8 到 128 位".into());
         }
         if !secret.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
             return Err("同步密钥只能使用英文字母、数字和符号".into());
-        }
-        if !(1024..=65535).contains(&port) {
-            return Err("端口需要在 1024 到 65535 之间".into());
         }
         self.set_setting("sync_secret", secret)?;
         self.set_setting("sync_port", &port.to_string())
@@ -699,6 +723,11 @@ impl Db {
         Ok(secret)
     }
 
+    /// Whether a usable sync secret is saved, without handing the value out.
+    pub fn sync_secret_configured(&self) -> Result<bool, String> {
+        Ok(self.require_sync_secret().is_ok())
+    }
+
     pub fn sync_snapshot(&self) -> Result<Vec<SyncTask>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         sync_tasks(&conn)
@@ -706,70 +735,82 @@ impl Db {
 
     /// `remote_schema` < 1 means the peer predates due dates and sends none, so an
     /// update from it must not clear the local `due_at`.
+    ///
+    /// The payload is merged in slices: a long history (thousands of tombstones) used to be
+    /// rejected outright, which left two devices unable to sync at all, and one transaction
+    /// over every row would hold the write lock for the whole merge.
     pub fn merge_remote(&self, incoming: &[SyncTask], remote_schema: u32) -> Result<usize, String> {
+        /// Must stay above the row count of any realistic history; the real size guard is
+        /// the sync payload limit in the HTTP layer.
+        const MAX_INCOMING: usize = 200_000;
+        /// Rows per transaction.
+        const MERGE_CHUNK: usize = 2_000;
+
         let keep_local_due = remote_schema < 1;
-        if incoming.len() > 5000 {
-            return Err("一次同步的任务不能超过 5000 条".into());
+        if incoming.len() > MAX_INCOMING {
+            return Err(format!("一次同步的任务不能超过 {MAX_INCOMING} 条"));
         }
         for task in incoming {
             validate_sync_task(task)?;
         }
         let incoming = newest_by_uid(incoming);
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
         let mut applied = 0usize;
-        for remote in incoming {
-            let local = tx
-                .query_row(
-                    "SELECT uid, title, description, quadrant, priority,
-                            importance_score, urgency_score, done, created_at, completed_at,
-                            updated_at, updated_by, deleted_at, due_at
-                     FROM tasks WHERE uid = ?1",
-                    params![remote.uid],
-                    read_sync_task,
-                )
-                .optional()
-                .map_err(|e| e.to_string())?;
-            if local.as_ref().is_some_and(|item| !remote_wins(item, remote)) {
-                continue;
-            }
-            if local.is_none() {
-                tx.execute(
-                    "INSERT INTO tasks
-                        (title, description, quadrant, priority, importance_score, urgency_score,
-                         done, created_at, completed_at, uid, updated_at, updated_by, deleted_at, due_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-                    params![
-                        remote.title, remote.description, remote.quadrant, remote.priority,
-                        remote.importance_score, remote.urgency_score, remote.done as i64,
-                        remote.created_at, remote.completed_at, remote.uid, remote.updated_at,
-                        remote.updated_by, remote.deleted_at, remote.due_at
-                    ],
-                )
-                .map_err(|e| e.to_string())?;
-            } else {
-                tx.execute(
-                    "UPDATE tasks
-                     SET title = ?1, description = ?2, quadrant = ?3, priority = ?4,
-                         importance_score = ?5, urgency_score = ?6, done = ?7,
-                         created_at = ?8, completed_at = ?9, updated_at = ?10,
-                         updated_by = ?11, deleted_at = ?12,
-                         due_at = CASE WHEN ?14 THEN due_at ELSE ?15 END
-                     WHERE uid = ?13",
-                    params![
-                        remote.title, remote.description, remote.quadrant, remote.priority,
-                        remote.importance_score, remote.urgency_score, remote.done as i64,
-                        remote.created_at, remote.completed_at, remote.updated_at,
-                        remote.updated_by, remote.deleted_at, remote.uid,
-                        keep_local_due, remote.due_at
-                    ],
+        for chunk in incoming.chunks(MERGE_CHUNK) {
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            for &remote in chunk {
+                let local = tx
+                    .query_row(
+                        "SELECT uid, title, description, quadrant, priority,
+                                importance_score, urgency_score, done, created_at, completed_at,
+                                updated_at, updated_by, deleted_at, due_at
+                         FROM tasks WHERE uid = ?1",
+                        params![remote.uid],
+                        read_sync_task,
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                if local.as_ref().is_some_and(|item| !remote_wins(item, remote)) {
+                    continue;
+                }
+                if local.is_none() {
+                    tx.execute(
+                        "INSERT INTO tasks
+                            (title, description, quadrant, priority, importance_score, urgency_score,
+                             done, created_at, completed_at, uid, updated_at, updated_by, deleted_at, due_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                        params![
+                            remote.title, remote.description, remote.quadrant, remote.priority,
+                            remote.importance_score, remote.urgency_score, remote.done as i64,
+                            remote.created_at, remote.completed_at, remote.uid, remote.updated_at,
+                            remote.updated_by, remote.deleted_at, remote.due_at
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                } else {
+                    tx.execute(
+                        "UPDATE tasks
+                         SET title = ?1, description = ?2, quadrant = ?3, priority = ?4,
+                             importance_score = ?5, urgency_score = ?6, done = ?7,
+                             created_at = ?8, completed_at = ?9, updated_at = ?10,
+                             updated_by = ?11, deleted_at = ?12,
+                             due_at = CASE WHEN ?14 THEN due_at ELSE ?15 END
+                         WHERE uid = ?13",
+                        params![
+                            remote.title, remote.description, remote.quadrant, remote.priority,
+                            remote.importance_score, remote.urgency_score, remote.done as i64,
+                            remote.created_at, remote.completed_at, remote.updated_at,
+                            remote.updated_by, remote.deleted_at, remote.uid,
+                            keep_local_due, remote.due_at
+                        ],
 
-                )
-                .map_err(|e| e.to_string())?;
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                applied += 1;
             }
-            applied += 1;
+            tx.commit().map_err(|e| e.to_string())?;
         }
-        tx.commit().map_err(|e| e.to_string())?;
         Ok(applied)
     }
 }
@@ -803,12 +844,87 @@ fn ensure_sync_columns(conn: &Connection) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     }
+    // Only a database without the unique index can hold duplicate uids (a hand-edited or
+    // half-migrated file). Re-mint them up front: creating the index would otherwise fail
+    // and `Db::open` would abort before the window ever appears.
+    if !has_index(conn, "idx_tasks_uid")? {
+        for id in duplicate_uid_rows(conn)? {
+            conn.execute(
+                "UPDATE tasks SET uid = ?1 WHERE id = ?2",
+                params![uuid::Uuid::new_v4().to_string(), id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_uid ON tasks(uid)",
         [],
     )
     .map_err(|e| e.to_string())?;
+    // Statistics scan by completion date and quadrant; keep those off a full table scan.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_done_completed ON tasks(done, completed_at)",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_quadrant ON tasks(quadrant, done)",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Finished tasks cleared from the board keep their row as a tombstone: the statistics count
+/// them and peers learn about the deletion from it. An abandoned unfinished task is neither
+/// (see `get_stats`), so its tombstone is only kept long enough that a device which has been
+/// offline since the deletion cannot resurrect it by syncing its own copy back.
+const TOMBSTONE_RETENTION_DAYS: i64 = 180;
+
+fn prune_tombstones(conn: &Connection) -> Result<(), String> {
+    let cutoff = Utc::now().timestamp_millis() - TOMBSTONE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    conn.execute(
+        "DELETE FROM tasks WHERE done = 0 AND deleted_at IS NOT NULL AND deleted_at < ?1",
+        params![cutoff],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn has_index(conn: &Connection, name: &str) -> Result<bool, String> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1",
+            params![name],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(found.is_some())
+}
+
+/// Ids of every row whose uid repeats an earlier one (newest `updated_at` wins, oldest is
+/// re-minted). Empty unless the table actually holds duplicates.
+fn duplicate_uid_rows(conn: &Connection) -> Result<Vec<i64>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, uid FROM tasks
+             WHERE uid IS NOT NULL AND uid != ''
+             ORDER BY updated_at DESC, id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?;
+    let mut seen = std::collections::HashSet::new();
+    let mut duplicates = Vec::new();
+    for row in rows {
+        let (id, uid) = row.map_err(|e| e.to_string())?;
+        if !seen.insert(uid) {
+            duplicates.push(id);
+        }
+    }
+    Ok(duplicates)
 }
 
 fn has_column(conn: &Connection, column: &str) -> Result<bool, String> {
@@ -962,14 +1078,21 @@ fn read_sync_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncTask> {
 }
 
 fn newest_by_uid(incoming: &[SyncTask]) -> Vec<&SyncTask> {
+    // One payload can carry 5000 rows; scanning the winners per row would be O(n²) string
+    // comparisons on every sync round, so index them by uid instead.
+    let mut at_by_uid: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     let mut chosen: Vec<&SyncTask> = Vec::new();
     for task in incoming {
-        if let Some(existing) = chosen.iter_mut().find(|item| item.uid == task.uid) {
-            if remote_wins(existing, task) {
-                *existing = task;
+        match at_by_uid.get(task.uid.as_str()) {
+            Some(&at) => {
+                if remote_wins(chosen[at], task) {
+                    chosen[at] = task;
+                }
             }
-        } else {
-            chosen.push(task);
+            None => {
+                at_by_uid.insert(task.uid.as_str(), chosen.len());
+                chosen.push(task);
+            }
         }
     }
     chosen
@@ -1014,31 +1137,47 @@ fn validate_sync_task(task: &SyncTask) -> Result<(), String> {
 }
 
 
-fn calibration_bias(conn: &Connection) -> Result<(f64, f64), String> {
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM feedback", params![], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
-    if count == 0 {
-        return Ok((0.0, 0.0));
-    }
-    let avg: (f64, f64) = conn
+/// (corrections, importance bias, urgency bias) in one pass over the feedback table.
+fn feedback_calibration(conn: &Connection) -> Result<(i64, f64, f64), String> {
+    let (count, imp_avg, urg_avg): (i64, Option<f64>, Option<f64>) = conn
         .query_row(
-            "SELECT AVG(user_importance - ai_importance),
+            "SELECT COUNT(*),
+                    AVG(user_importance - ai_importance),
                     AVG(user_urgency - ai_urgency)
              FROM feedback",
             params![],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|e| e.to_string())?;
+    if count == 0 {
+        return Ok((0, 0.0, 0.0));
+    }
     // Soften bias: with few samples, trust AI more; with many, trust user more.
     let weight = (count as f64 / (count as f64 + 5.0)).min(0.6);
-    Ok((avg.0 * weight, avg.1 * weight))
+    Ok((
+        count,
+        imp_avg.unwrap_or(0.0) * weight,
+        urg_avg.unwrap_or(0.0) * weight,
+    ))
 }
 
 /// Same limits as validate_sync_task, so a local task can never be rejected by a peer.
 fn validate_text(title: &str, description: &str) -> Result<(), String> {
     if title.chars().count() > 2000 || description.chars().count() > 20_000 {
         return Err("任务标题或描述过长".into());
+    }
+    Ok(())
+}
+
+/// A backup is user-supplied input: reject timestamps the sync path would refuse, so a
+/// corrupt file cannot install rows a peer can never merge.
+fn validate_import_times(task: &BackupTask) -> Result<(), String> {
+    let negative = task.created_at < 0
+        || task.updated_at < 0
+        || task.completed_at.is_some_and(|v| v < 0)
+        || task.deleted_at.is_some_and(|v| v < 0);
+    if negative {
+        return Err("备份中的时间戳无效".into());
     }
     Ok(())
 }
@@ -1081,13 +1220,6 @@ fn local_midnight_ms(date: chrono::NaiveDate) -> Result<i64, String> {
         .earliest()
         .map(|dt| dt.timestamp_millis())
         .ok_or_else(|| "无法换算本地时间".into())
-}
-
-fn db_path() -> Result<PathBuf, String> {
-    let base = dirs::data_dir()
-        .ok_or("cannot determine data dir")?
-        .join("eisenhower-matrix");
-    Ok(base.join("tasks.db"))
 }
 
 #[cfg(test)]
@@ -1219,6 +1351,95 @@ mod tests {
 
         db.restore_tasks(&[t.id]).unwrap();
         assert_eq!(db.get_stats().unwrap().pending, 1);
+    }
+
+    #[test]
+    fn merge_accepts_a_history_larger_than_one_chunk() {
+        let db = Db::open_in_memory().unwrap();
+        // Split over several merge chunks: a long history must not be rejected any more.
+        let incoming: Vec<SyncTask> = (0..4_500)
+            .map(|i| SyncTask {
+                uid: format!("uid-{i:08}"),
+                title: format!("task {i}"),
+                description: String::new(),
+                quadrant: 1,
+                priority: 50.0,
+                importance_score: 3.0,
+                urgency_score: 3.0,
+                done: false,
+                created_at: 1_700_000_000_000,
+                completed_at: None,
+                updated_at: 1_700_000_000_000,
+                updated_by: "peer-device".into(),
+                deleted_at: None,
+                due_at: None,
+            })
+            .collect();
+        assert_eq!(db.merge_remote(&incoming, SYNC_SCHEMA).unwrap(), incoming.len());
+        assert_eq!(db.sync_snapshot().unwrap().len(), incoming.len());
+    }
+
+    #[test]
+    fn old_unfinished_tombstones_are_pruned_but_finished_ones_stay() {
+        let db = Db::open_in_memory().unwrap();
+        let abandoned = db.create_task(&input("abandoned", 1, 50.0)).unwrap();
+        let finished = db.create_task(&input("finished", 1, 40.0)).unwrap();
+        db.delete_task(abandoned.id).unwrap();
+        db.toggle_done(finished.id).unwrap();
+        db.delete_task(finished.id).unwrap();
+
+        let old = Utc::now().timestamp_millis() - 400 * 24 * 60 * 60 * 1000;
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute("UPDATE tasks SET deleted_at = ?1", params![old]).unwrap();
+            prune_tombstones(&conn).unwrap();
+        }
+
+        let uids: Vec<String> = db.sync_snapshot().unwrap().into_iter().map(|t| t.uid).collect();
+        assert_eq!(uids.len(), 1, "the abandoned tombstone should be gone");
+        assert!(db.get_stats().unwrap().done == 1, "completion history is kept");
+    }
+
+    #[test]
+    fn saving_an_empty_secret_keeps_the_saved_one() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(!db.sync_secret_configured().unwrap());
+        assert!(db.save_sync_config("", 47321).is_err());
+
+        db.save_sync_config("shared-secret", 47321).unwrap();
+        assert!(db.sync_secret_configured().unwrap());
+        // Saving the port from the settings page must not require re-typing the secret.
+        db.save_sync_config("", 48000).unwrap();
+        assert_eq!(db.sync_port().unwrap(), 48000);
+        assert_eq!(db.require_sync_secret().unwrap(), "shared-secret");
+    }
+
+    #[test]
+    fn duplicate_uids_are_repaired_before_the_unique_index() {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.create_task(&input("a", 1, 50.0)).unwrap();
+        let b = db.create_task(&input("b", 1, 40.0)).unwrap();
+        {
+            // A database written by an older build (or edited by hand) may hold duplicates.
+            let conn = db.conn.lock().unwrap();
+            conn.execute("DROP INDEX idx_tasks_uid", []).unwrap();
+            conn.execute(
+                "UPDATE tasks SET uid = 'duplicated-uid' WHERE id IN (?1, ?2)",
+                params![a.id, b.id],
+            )
+            .unwrap();
+            assert_eq!(duplicate_uid_rows(&conn).unwrap().len(), 1);
+        }
+        // migrate() re-mints the loser instead of failing to create the unique index.
+        db.migrate().unwrap();
+        let uids: Vec<String> = db
+            .sync_snapshot()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.uid)
+            .collect();
+        assert_eq!(uids.len(), 2);
+        assert_ne!(uids[0], uids[1]);
     }
 
     #[test]

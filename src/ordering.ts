@@ -51,6 +51,26 @@ export function indexFromPointer(y: number, midpoints: number[]): number {
   return i;
 }
 
+/** How long a finger must rest on a card before it starts dragging instead of scrolling. */
+export const TOUCH_HOLD_MS = 260;
+/** Finger travel that turns a touch into a list scroll while the hold is still pending. */
+export const TOUCH_SLOP = 8;
+
+/**
+ * What a touch that started on a card means right now. Cards disable native panning
+ * (`touch-action: none`) so the list cannot scroll itself on a phone; the board scrolls it
+ * by hand while `armed` is false, and a long enough hold (`armed`) turns the gesture into a
+ * drag. Mouse pointers skip this and drag straight away.
+ */
+export function touchIntent(
+  movedPx: number,
+  armed: boolean,
+  slop = TOUCH_SLOP,
+): "drag" | "scroll" | "pending" {
+  if (armed) return "drag";
+  return movedPx > slop ? "scroll" : "pending";
+}
+
 /** Quadrant under the pointer; the small gaps between quadrants snap to the nearest one. */
 export function pickQuadrant(x: number, y: number, zones: ZoneRect[], slack = 16): Quadrant | null {
   let best: Quadrant | null = null;

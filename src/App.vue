@@ -9,8 +9,13 @@ import SettingsDialog from "./components/SettingsDialog.vue";
 import FloatingBall from "./components/FloatingBall.vue";
 import ToastHost from "./components/ToastHost.vue";
 import { useTasks } from "./composables/useTasks";
+import { useToast } from "./composables/useToast";
+import { usePlatform } from "./composables/usePlatform";
 
 const { tasks, loadTasks, loadSettings, clearDone, loading, applyTheme, settings } = useTasks();
+const { showError } = useToast();
+// The floating ball is a desktop window arrangement; phones have no second window.
+const { isMobile } = usePlatform();
 
 const view = ref<"board" | "stats">("board");
 const showWizard = ref(false);
@@ -41,7 +46,11 @@ const windowLabel = getCurrentWindow().label;
 const isBallWindow = computed(() => windowLabel === "floating-ball");
 
 async function minimizeToBall() {
-  await invoke("minimize_to_ball");
+  try {
+    await invoke("minimize_to_ball");
+  } catch (err) {
+    showError("无法切换到悬浮球", err);
+  }
 }
 
 onMounted(async () => {
@@ -53,8 +62,11 @@ onMounted(async () => {
     return;
   }
   window.addEventListener("keydown", onGlobalKeyDown);
-  await Promise.all([loadTasks(), loadSettings()]);
-  applyTheme(settings.value.theme || "light");
+  // Both loads are independent: one failing still applies the theme and reports its own reason.
+  const [tasksResult, settingsResult] = await Promise.allSettled([loadTasks(), loadSettings()]);
+  if (settingsResult.status === "fulfilled") applyTheme(settings.value.theme || "light");
+  if (tasksResult.status === "rejected") showError("读取任务失败", tasksResult.reason);
+  if (settingsResult.status === "rejected") showError("读取设置失败", settingsResult.reason);
 });
 </script>
 
@@ -97,7 +109,7 @@ onMounted(async () => {
         <button class="btn btn-ghost btn-sm" @click="clearDone">
           清除已完成
         </button>
-        <button class="icon-btn" @click="minimizeToBall" title="转为悬浮球">
+        <button v-if="!isMobile" class="icon-btn" @click="minimizeToBall" title="转为悬浮球">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
             <circle cx="8" cy="8" r="6"/>
             <circle cx="8" cy="8" r="2.5"/>
