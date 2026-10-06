@@ -12,7 +12,7 @@ name: Android
 
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main, "feat/**", "ci/**"]
     tags: ["v*"]
     paths-ignore: ["**.md", "LICENSE", "docs/**"]
   workflow_dispatch:
@@ -114,6 +114,24 @@ jobs:
 
       - name: Generate the Android project
         run: npx tauri android init --ci --skip-targets-install
+
+      # Pushing the branch `ci/signing-selftest` exercises the release + signing path with a
+      # throwaway key, so that path is not first tested the day a real keystore is added.
+      - name: Provide a throwaway keystore (signing self-test)
+        if: github.ref_name == 'ci/signing-selftest'
+        run: |
+          set -euo pipefail
+          JKS="$RUNNER_TEMP/selftest.jks"
+          keytool -genkeypair -keystore "$JKS" -storepass selftest123 -keypass selftest123 \
+            -alias selftest -keyalg RSA -keysize 2048 -validity 30 -dname "CN=Signing Self Test"
+          {
+            echo "ANDROID_KEY_ALIAS=selftest"
+            echo "ANDROID_STORE_PASSWORD=selftest123"
+            echo "ANDROID_KEY_PASSWORD=selftest123"
+            echo "ANDROID_KEY_BASE64=$(base64 -w0 "$JKS")"
+          } >> "$GITHUB_ENV"
+          rm -f "$JKS"
+          echo "已注入一次性测试密钥（仅用于验证签名流程）"
 
       - name: Decide the build flavour
         id: flavour
