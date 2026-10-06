@@ -15,7 +15,7 @@
 
 - 版本：`3.3.1`（`src-tauri/tauri.conf.json` 与两个 `Cargo.toml`/`package.json` 需一起改）
 - Android 验证基准：调试包构建 [run 37441422009](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37441422009) ✅；签名自检 [run 37443294373](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37443294373) ✅（release APK 19MB + AAB 7.7MB，均已签名）
-- 合并进 `main` 后的首次 Android 构建：[run 37461559211](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37461559211) ✅（commit `0dd4531`，产物 `android-0dd4531…` 47.1MB），同一次推送的 `CI` 也通过
+- `main` 当前基线（commit `28b8933`）：Android [run 37462398269](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37462398269) ✅（产物 `android-28b8933…` 47.1MB）、CI [run 37462398442](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37462398442) ✅；合并进 main 后的首次构建是 [run 37461559211](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37461559211) ✅（`0dd4531`）
 
 ---
 
@@ -172,11 +172,11 @@ python scripts/ci.py watch main android.yml
 
 ## 8. 变更日志（新的一轮追加在最上面）
 
-### 第 4 轮 · 2026-10-06 · 交接文档与 CI 脚本（提交 `d44d265`）
+### 第 4 轮 · 2026-10-06 · 交接文档与 CI 脚本（提交 `d44d265`、`28b8933`）
 
 - 新增本文件 `HANDOFF.md` 与 `scripts/ci.py`（把上一轮临时用的 CI 观察脚本正式收进仓库，加了网络重试）。
-- README 增加指向本文件的入口与 `scripts/ci.py` 用法；`.gitignore` 忽略 `__pycache__/`；`android.yml` 的 `paths-ignore` 增加 `scripts/**`、`.gitignore`（纯脚本/文档改动不必跑 APK 构建）。
-- 未改任何业务代码；验证：`vue-tsc` / `vitest` / `cargo test` 结果与第 3 轮一致（文档与脚本改动不影响构建）。
+- README 增加指向本文件的入口与 `scripts/ci.py` 用法；`.gitignore` 忽略 `__pycache__/`；`android.yml` 的 `paths-ignore` 增加 `scripts/**`、`.gitignore`（纯脚本/文档改动的提交不再跑 APK 构建）。
+- 未改任何业务代码；验证：`vue-tsc` / `vitest` / `cargo test` 结果与第 3 轮一致，且 `main` 上 Android [37462398269](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37462398269) 与 CI [37462398442](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37462398442) 两个工作流均通过（产物 `android-28b8933…` 47.1MB）。
 
 ### 第 3 轮 · 2026-10-06 · Android 端 + 远程打包（提交 `33aa17b` → `0dd4531`，已快进合并进 `main`）
 
