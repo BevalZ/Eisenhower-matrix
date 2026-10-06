@@ -14,6 +14,7 @@
 桌面端（Windows/macOS/Linux）与 **Android 端**功能齐备，代码在 `main`；所有安装包与 APK 都由 **GitHub Actions 远程构建**，本机不需要也不应该打包。Android 目前产出**调试签名 APK**（可安装测试），正式签名所需的上传密钥（keystore）**尚未配置**，但工作流与签名流程已用一次性密钥实测通过。
 
 - 版本：`3.4.0`（`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 三处必须一起改，改完打 tag 发布）
+- 最新发布：[Release v3.4.0](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.0) ✅（tag 指向 `03d4083`，7 个资产，含 Android APK）
 - Android 验证基准：调试包构建 [run 37441422009](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37441422009) ✅；签名自检 [run 37443294373](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37443294373) ✅（release APK 19MB + AAB 7.7MB，均已签名）
 - `main` 当前基线（commit `28b8933`）：Android [run 37462398269](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37462398269) ✅（产物 `android-28b8933…` 47.1MB）、CI [run 37462398442](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37462398442) ✅；合并进 main 后的首次构建是 [run 37461559211](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37461559211) ✅（`0dd4531`）
 
@@ -178,6 +179,9 @@ python scripts/ci.py watch main android.yml
 - `release.yml` 的 Release 说明重写为本轮 feat：Android 端、同步容量修复（>5000 条不再永久失联）、密钥安全（同步密钥按需读取 + 明文存储提示）、性能（统计 SQL 17→3、同步去重 O(n²)→哈希、共享 HTTP 客户端）、启动稳定性（重复 uid 修复）、触屏与窄屏；安装表格补上 Android 与「当前为调试签名」的说明。
 - `android.yml`：产物改名为 `Eisenhower-Matrix_<版本|短SHA>_android-arm64-<debug|release>.apk` 与 `..._android.aab`；「附加到 Release」**不再自己 create**（会与 tauri-action 抢同一个 release），改为最多等 10 分钟等 `release.yml` 建好再 `gh release upload`，超时只在 Artifacts 保留并给 warning。
 - 发布方式：`git push origin main` → `git tag v3.4.0` → `git push origin v3.4.0`，`Release`（桌面四平台）与 `Android`（APK）两个工作流并行；Android 的 APK 会等到 Release 建好后挂上去。
+- **发布结果（已验证）**：[Release v3.4.0](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.0) 已发布（非 draft），共 7 个资产：`Eisenhower-Matrix_3.4.0_android-arm64-debug.apk`（174MB，调试签名）、Windows `x64-setup.exe` 3.8MB + `v3.4.0_x64_portable.exe` 14.7MB、macOS `aarch64.dmg` 5.3MB / `x64.dmg` 5.5MB、Linux `amd64.deb` 7.1MB / `amd64.AppImage` 81.4MB。`Release` 工作流四个平台全部 success，`Android` 工作流 success 且成功等到 Release 后再上传（新逻辑生效，没有与 tauri-action 抢 release）。release 正文校验通过（新功能 / 安装 / 首次使用三段齐全，含 Android 安装说明）。
+- **注意**：调试签名 APK 有 174MB（未剥离调试符号）；配置签名密钥后走 release 构建约 19MB，且可用于上架。
+- 顺带修复：`scripts/ci.py` 的重试集合补上 `IncompleteRead`/半截 JSON（本轮被代理截断过一次响应）。
 
 ### 第 4 轮 · 2026-10-06 · 交接文档与 CI 脚本（提交 `d44d265`、`28b8933`）
 
