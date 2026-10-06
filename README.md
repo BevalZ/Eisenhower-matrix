@@ -185,6 +185,8 @@ base64 -w0 upload-keystore.jks > keystore.b64
 
 > keystore 与口令就是你的签名身份：泄露后别人可以签出被系统当作升级包安装的 APK。只放进 Secrets，不要提交进仓库。
 
+> 想先验证签名流程本身（不配真实密钥）？推一个名为 `ci/signing-selftest` 的分支：工作流会用 runner 上生成的一次性密钥走完整的 release + 签名流程，产出 `app-universal-release.apk` / `.aab`；验证完删掉该分支即可。
+
 #### 手机端与桌面端的差异
 
 - **同步**：手机端没有 `tailscale` 命令，多端直连同步只在桌面端可用；手机请用 **WebDAV 同步**。
