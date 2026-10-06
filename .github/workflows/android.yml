@@ -182,8 +182,23 @@ jobs:
           mkdir -p out
           find src-tauri/gen/android/app/build/outputs -name "*.apk" -exec cp -v {} out/ \;
           find src-tauri/gen/android/app/build/outputs -name "*.aab" -exec cp -v {} out/ \; || true
-          ls -lh out
           test -n "$(ls -A out)" || { echo "::error::没有找到 APK/AAB 产物"; exit 1; }
+
+          # 给产物起个好认的名字：tag 用版本号，分支推送用短 SHA
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            NAME="${GITHUB_REF_NAME#v}"
+          else
+            NAME="$(git rev-parse --short HEAD)"
+          fi
+          for apk in out/*.apk; do
+            case "$apk" in *debug*) kind=debug ;; *) kind=release ;; esac
+            mv "$apk" "out/Eisenhower-Matrix_${NAME}_android-arm64-${kind}.apk"
+          done
+          for aab in out/*.aab; do
+            [ -e "$aab" ] || continue
+            mv "$aab" "out/Eisenhower-Matrix_${NAME}_android.aab"
+          done
+          ls -lh out
 
       - uses: actions/upload-artifact@v4
         with:
@@ -192,13 +207,21 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # Release 由 release.yml 创建（桌面安装包在那一步一起产出）。这里等它出现再上传，
+      # 不要自己 create，否则会和 tauri-action 抢同一个 release。
       - name: Attach to the release (tags only)
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Android 构建产物" \
-            || true
-          gh release upload "$GITHUB_REF_NAME" out/* --clobber \
-            || echo "::warning::上传到 Release 失败，请从本次运行的 Artifacts 下载安装包"
+          for i in $(seq 1 60); do
+            if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then break; fi
+            echo "等待 Release 创建…（第 $i 次）"
+            sleep 10
+          done
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" out/* --clobber
+            echo "已上传到 Release $GITHUB_REF_NAME"
+          else
+            echo "::warning::10 分钟内没等到 Release，Android 包只保留在本次运行的 Artifacts 里"
+          fi
