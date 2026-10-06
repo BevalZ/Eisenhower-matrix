@@ -51,16 +51,44 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up the Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install the Android NDK
+      # The ubuntu runner image already ships the Android SDK; driving its own sdkmanager
+      # avoids android-actions/setup-android, whose license prompt exited 1 on this repo.
+      - name: Set up the Android SDK and NDK
         run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager --install "ndk;$NDK_VERSION"
-          test -d "$ANDROID_HOME/ndk/$NDK_VERSION" || { echo "::error::NDK $NDK_VERSION 安装失败"; exit 1; }
-          echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          test -d "$SDK" || { echo "::error::找不到 Android SDK（$SDK）"; exit 1; }
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          export ANDROID_HOME="$SDK"
+
+          SDKMGR="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKMGR" ] || SDKMGR="$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -1)"
+          test -x "$SDKMGR" || { echo "::error::找不到 sdkmanager"; exit 1; }
+          echo "sdkmanager: $SDKMGR"
+
+          # Accept the SDK licences up front: Gradle needs them when it fetches build tools.
+          yes | timeout 300 "$SDKMGR" --licenses >/dev/null 2>&1 || true
+
+          LIST=$(timeout 300 "$SDKMGR" --list 2>/dev/null || true)
+          NDK=""
+          for candidate in $NDK_VERSION 27.1.12297006 26.3.11579264 26.1.10909125; do
+            if printf '%s' "$LIST" | grep -q "ndk;$candidate"; then NDK="$candidate"; break; fi
+          done
+          [ -n "$NDK" ] || NDK=$(printf '%s' "$LIST" | grep -oE 'ndk;[0-9]+\.[0-9]+\.[0-9]+' | sort -V -u | tail -1 | cut -d';' -f2)
+          test -n "$NDK" || { echo "::error::没有可用的 Android NDK"; exit 1; }
+          echo "installing ndk;$NDK"
+
+          install_pkg() {
+            if timeout 1800 "$SDKMGR" --install "$@" >/dev/null 2>&1; then return 0; fi
+            echo "直接安装失败，改用 sudo 重试"
+            timeout 1800 sudo "$SDKMGR" --install "$@" >/dev/null
+          }
+          install_pkg "ndk;$NDK"
+          test -d "$SDK/ndk/$NDK" || { echo "::error::NDK $NDK 安装失败"; exit 1; }
+          echo "NDK_HOME=$SDK/ndk/$NDK" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$SDK/ndk/$NDK" >> "$GITHUB_ENV"
+          echo "NDK_VERSION=$NDK" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -82,7 +110,7 @@ jobs:
           rustc --version
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "NDK_HOME=$NDK_HOME"
-          ls "$ANDROID_HOME/ndk/$NDK_VERSION" | head -5
+          ls "$NDK_HOME" | head -5
 
       - name: Generate the Android project
         run: npx tauri android init --ci --skip-targets-install
