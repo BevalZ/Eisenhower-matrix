@@ -3,15 +3,15 @@ import { computed, nextTick, ref } from "vue";
 import TaskCard from "./TaskCard.vue";
 import TaskEditDialog from "./TaskEditDialog.vue";
 import type { Task, Quadrant } from "../types";
-import { DEFAULT_PRIORITY, QUADRANT_META, UNSCORED } from "../types";
+import { QUADRANT_META } from "../types";
 import { useTasks } from "../composables/useTasks";
-import { useToast } from "../composables/useToast";
 import { useBoardDrag } from "../composables/useBoardDrag";
 import { useDueReminders } from "../composables/useDueReminders";
 import { clampIndex, naturalIndex, planDrop, type TaskMove } from "../ordering";
 
-const { tasks, toggleTaskDone, deleteTask, reorderTasks, holdRemoteRefresh, tasksByQuadrant, createTask } = useTasks();
-const { showError } = useToast();
+const emit = defineEmits<{ "new-task": [] }>();
+
+const { tasks, toggleTaskDone, deleteTask, reorderTasks, holdRemoteRefresh, tasksByQuadrant } = useTasks();
 
 const quadrants: Quadrant[] = [1, 2, 3, 4];
 const layout: Record<Quadrant, { row: number; col: number }> = {
@@ -49,43 +49,13 @@ const rows = computed(() => {
 const liveMessage = ref("");
 const editing = ref<Task | null>(null);
 
-// ---- Quick add: title only, no AI ----
-
-const adding = ref<Quadrant | null>(null);
-const addTitle = ref("");
-const addBusy = ref(false);
-
-function openQuickAdd(q: Quadrant) {
-  adding.value = adding.value === q ? null : q;
-  addTitle.value = "";
+/** 点击象限空白处 = 新建任务（一律走 AI 向导，象限由 AI 判断，仍可在向导里微调）。 */
+function onBodyClick(e: MouseEvent) {
+  const target = e.target as HTMLElement | null;
+  if (!target) return;
+  // 只响应空白区域：象限容器本身，或「拖入任务」占位块；卡片与按钮不触发
+  if (target === e.currentTarget || target.closest(".empty")) emit("new-task");
 }
-
-async function submitQuickAdd(q: Quadrant) {
-  const title = addTitle.value.trim();
-  if (!title || addBusy.value) return;
-  addBusy.value = true;
-  try {
-    const task = await createTask({
-      title,
-      description: "",
-      quadrant: q,
-      priority: DEFAULT_PRIORITY[q],
-      importance_score: UNSCORED,
-      urgency_score: UNSCORED,
-    });
-    addTitle.value = "";
-    liveMessage.value = `已添加「${title}」到${QUADRANT_META[q].name}`;
-    await nextTick();
-    document.querySelector(`[data-task-id="${task.id}"]`)?.scrollIntoView({ block: "nearest" });
-  } catch (err) {
-    showError("添加失败", err);
-  } finally {
-    addBusy.value = false;
-  }
-}
-
-/** Focus once when mounted (a function ref would re-focus on every render). */
-const vFocus = { mounted: (el: HTMLElement) => el.focus() };
 
 function closeEditor() {
   const id = editing.value?.id;
@@ -154,30 +124,13 @@ function nudge(task: Task, delta: -1 | 1) {
             </div>
             <kbd class="q-key" :title="`选中卡片后按 ${q} 移到这里`">{{ q }}</kbd>
             <span class="q-count">{{ tasksByQuadrant(q).length }}</span>
-            <button
-              class="q-add"
-              :class="{ active: adding === q }"
-              :aria-label="`快速添加到${QUADRANT_META[q].name}`"
-              :aria-expanded="adding === q"
-              title="快速添加（不经过 AI）"
-              @click="openQuickAdd(q)"
-            >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 2v8M2 6h8"/></svg>
-            </button>
           </div>
-          <div :ref="(el) => setBody(q, el)" class="q-body">
-            <form v-if="adding === q" class="quick-add" @submit.prevent="submitQuickAdd(q)">
-              <input
-                v-focus
-                v-model="addTitle"
-                type="text"
-                maxlength="2000"
-                placeholder="输入标题，回车添加，Esc 关闭"
-                :aria-label="`新任务标题（${QUADRANT_META[q].name}）`"
-                :disabled="addBusy"
-                @keydown.esc.stop.prevent="adding = null"
-              />
-            </form>
+          <div
+            :ref="(el) => setBody(q, el)"
+            class="q-body"
+            :title="`点击空白处新建任务（${QUADRANT_META[q].name}）`"
+            @click="onBodyClick"
+          >
             <TransitionGroup tag="div" name="card" :css="false" class="q-list" role="list">
               <template v-for="row in rows[q]" :key="row.key">
                 <div
@@ -200,12 +153,13 @@ function nudge(task: Task, delta: -1 | 1) {
 
               </template>
             </TransitionGroup>
-            <div v-if="!rows[q].length && adding !== q" class="empty">
+            <div v-if="!rows[q].length" class="empty">
               <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.2">
                 <rect x="4" y="4" width="20" height="20" rx="3" stroke-dasharray="3 3"/>
                 <path d="M14 10v8M10 14h8" stroke-linecap="round"/>
               </svg>
-              <span>拖入任务，或选中卡片按 {{ q }}</span>
+              <span>点这里新建任务</span>
+              <span class="empty-sub">也可以把卡片拖进来（键盘：选中卡片按 {{ q }}）</span>
             </div>
           </div>
         </section>
@@ -317,23 +271,6 @@ function nudge(task: Task, delta: -1 | 1) {
   transition: opacity var(--dur-fast) var(--ease);
 }
 .board:focus-within .q-key { opacity: 1; }
-.q-add {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-}
-.q-add:hover,
-.q-add.active {
-  background: var(--q-light);
-  color: var(--q-color);
-}
-.q-add:focus-visible { outline: 2px solid var(--q-color); outline-offset: 1px; }
-.quick-add { margin-bottom: 8px; }
-.quick-add input { padding: 7px 10px; font-size: 13px; }
 .q-count {
   font-size: 11px;
   font-weight: 600;
@@ -356,12 +293,21 @@ function nudge(task: Task, delta: -1 | 1) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   color: var(--text-muted);
   font-size: 12px;
-  padding: 40px 0;
-  opacity: 0.6;
+  padding: 34px 0;
+  opacity: 0.7;
+  border-radius: var(--radius);
+  transition: background var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
 }
+/* 整块空白区域都是「新建任务」的入口，所以给一点可点的暗示 */
+.empty:hover {
+  background: var(--q-light);
+  opacity: 1;
+  color: var(--q-color);
+}
+.empty-sub { font-size: 11px; opacity: 0.75; }
 
 /* Siblings glide out of the way (FLIP via TransitionGroup move class). */
 .q-list > .card-move {

@@ -73,6 +73,8 @@ pub struct Settings {
     pub openai_key_configured: bool,
     /// The OS credential store was unavailable and a secret had to be kept in the database.
     pub secrets_stored_in_plaintext: bool,
+    /// Whether the AI config (including the API key) travels with WebDAV / peer sync.
+    pub sync_ai_key: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,6 +157,23 @@ pub struct SyncTask {
 /// Sync payload schema. 0 = before due dates (field absent), 1 = has `due_at`.
 pub const SYNC_SCHEMA: u32 = 1;
 
+/// AI 配置随同步一起走，这样换设备不必重新填一遍 Key。
+/// `api_key` 只在用户允许「同步 AI 密钥」时才有值，且是**明文**，会落在 WebDAV 文件里。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SyncAiSettings {
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// 本机最后一次保存 AI 配置的时间（ms）：谁的更新就用谁的，避免旧设备覆盖新配置。
+    #[serde(default)]
+    pub saved_at: i64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SyncEnvelope {
     pub device_id: String,
@@ -162,6 +181,9 @@ pub struct SyncEnvelope {
     /// Old peers don't send this, so it defaults to 0.
     #[serde(default)]
     pub schema: u32,
+    /// AI 配置（含可选密钥）；旧版本对端不发送，解析为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai: Option<SyncAiSettings>,
 }
 
 #[derive(Debug, Clone, Serialize)]

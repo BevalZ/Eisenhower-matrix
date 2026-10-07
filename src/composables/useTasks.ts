@@ -53,6 +53,12 @@ async function saveAiConfig(config: AiConfig) {
   await loadSettings();
 }
 
+/** 是否让 AI 配置（含 API Key）跟着 WebDAV / 多端同步一起走。 */
+async function setSyncAiKey(enabled: boolean) {
+  await invoke("set_sync_ai_key", { enabled });
+  await loadSettings();
+}
+
 async function classifyTask(description: string): Promise<ClassificationResult> {
   return await invoke<ClassificationResult>("classify_task", { description });
 }
@@ -264,13 +270,14 @@ async function getWebdavConfig(): Promise<WebdavInfo> {
 
 async function syncToWebdav(): Promise<SyncResult> {
   const result = await invoke<SyncResult>("sync_to_webdav");
-  await loadTasks();
+  // 同步可能带回 AI 配置（含 Key），所以设置也要重读
+  await Promise.all([loadTasks(), loadSettings()]);
   return result;
 }
 
 async function restoreFromWebdav(): Promise<SyncResult> {
   const result = await invoke<SyncResult>("restore_from_webdav");
-  await loadTasks();
+  await Promise.all([loadTasks(), loadSettings()]);
   return result;
 }
 
@@ -297,13 +304,13 @@ async function setPeerSyncListening(enabled: boolean): Promise<string> {
 
 async function syncWithPeer(ip: string): Promise<SyncResult> {
   const result = await invoke<SyncResult>("sync_with_peer", { ip });
-  await loadTasks();
+  await Promise.all([loadTasks(), loadSettings()]);
   return result;
 }
 
 async function syncAllPeers(): Promise<SyncResult> {
   const result = await invoke<SyncResult>("sync_all_peers");
-  await loadTasks();
+  await Promise.all([loadTasks(), loadSettings()]);
   return result;
 }
 
@@ -345,6 +352,7 @@ export function useTasks() {
     loadSettings,
     saveApiKey,
     saveAiConfig,
+    setSyncAiKey,
     classifyTask,
     createTask,
     updateTask,

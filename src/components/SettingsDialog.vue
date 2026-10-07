@@ -6,14 +6,14 @@ import { usePlatform } from "../composables/usePlatform";
 import type { PeerSyncStatus, TailscaleStatus, WebdavConfig } from "../types";
 
 const emit = defineEmits<{ close: [] }>();
-// Tailscale peer sync needs the desktop `tailscale` CLI, so the tab is desktop-only.
+// 手机端没有 `tailscale` 命令，列不出其他设备，所以那边改成手动填对端地址
 const { isMobile } = usePlatform();
 const {
   settings, saveApiKey, saveAiConfig, loadSettings,
   setTheme, exportToFile, importData,
   saveWebdav, getWebdavConfig, syncToWebdav, restoreFromWebdav,
   getTailscaleStatus, getPeerSyncStatus, savePeerSyncConfig,
-  setPeerSyncListening, syncWithPeer, syncAllPeers, revealSyncSecret,
+  setPeerSyncListening, syncWithPeer, syncAllPeers, revealSyncSecret, setSyncAiKey,
 } = useTasks();
 
 /** Inline status text that clears itself unless a newer message replaced it first. */
@@ -42,6 +42,8 @@ const tailscale = ref<TailscaleStatus | null>(null);
 const peerSync = ref<PeerSyncStatus | null>(null);
 const peerSecret = ref("");
 const peerPort = ref(47321);
+// 手机端列不出设备，手动填对端 Tailscale 地址
+const peerIp = ref("");
 const showPeerSecret = ref(false);
 const peerMsg = ref("");
 const peerBusy = ref(false);
@@ -147,6 +149,16 @@ async function saveWd() {
   webdav.password = "";
   webdavSaved.value = true;
   setTimeout(() => (webdavSaved.value = false), 2000);
+}
+
+/** 是否把 AI 配置（含 API Key）跟着同步一起走。 */
+async function toggleAiKeySync(enabled: boolean) {
+  try {
+    await setSyncAiKey(enabled);
+    flash(syncMsg, enabled ? "已开启 AI 配置同步" : "已关闭 AI 配置同步");
+  } catch (err) {
+    syncMsg.value = `设置失败: ${errorText(err)}`;
+  }
 }
 
 async function doSync() {
@@ -306,7 +318,7 @@ async function doRestore() {
         <button class="tab" :class="{ active: activeTab === 'general' }" @click="activeTab = 'general'">常规</button>
         <button class="tab" :class="{ active: activeTab === 'data' }" @click="activeTab = 'data'">数据</button>
         <button class="tab" :class="{ active: activeTab === 'sync' }" @click="activeTab = 'sync'">WebDAV</button>
-        <button v-if="!isMobile" class="tab" :class="{ active: activeTab === 'tailscale' }" @click="openTailscale">多端</button>
+        <button class="tab" :class="{ active: activeTab === 'tailscale' }" @click="openTailscale">多端</button>
       </div>
 
       <div class="tab-content">
@@ -383,7 +395,6 @@ async function doRestore() {
         </div>
 
         <div v-else-if="activeTab === 'sync'" class="pane">
-          <p v-if="isMobile" class="hint">手机端与桌面端之间请用 WebDAV 同步（Tailscale 直连只在桌面端可用）。</p>
           <div class="section">
             <label class="section-label">WebDAV 服务器配置</label>
             <input v-model="webdav.url" type="text" placeholder="https://dav.example.com/eisenhower/backup.json" aria-label="WebDAV 地址" />
@@ -412,6 +423,18 @@ async function doRestore() {
                 {{ syncing ? "恢复中…" : "↓ 用 WebDAV 覆盖本机" }}
               </button>
             </div>
+            <label class="save-opt">
+              <input
+                type="checkbox"
+                :checked="settings.sync_ai_key !== false"
+                @change="toggleAiKeySync(($event.target as HTMLInputElement).checked)"
+              />
+              同时同步 AI 配置与 API Key
+            </label>
+            <p class="hint">
+              勾上以后，AI 服务、接口地址、模型和 API Key 会跟着任务一起同步，新设备不用再填一遍。
+              注意：Key 是**明文**写进 WebDAV 文件里的，用公共网盘时请自行权衡。
+            </p>
             <p v-if="syncMsg" class="sync-msg">{{ syncMsg }}</p>
           </div>
         </div>
@@ -453,19 +476,29 @@ async function doRestore() {
           <div class="section">
             <label class="section-label">在线设备</label>
             <p class="hint">第一次同步前，历史任务会各自生成 uid。如果两边本来就有任务，可能出现重复，删掉多余的即可。也可以先用 JSON 把一台设备的数据导入另一台。</p>
-            <div v-if="!tailscale?.peers.length" class="hint">没有发现其他 Tailscale 设备。</div>
-            <div v-else class="peer-list">
-              <div v-for="peer in tailscale.peers" :key="peer.ip" class="peer">
-                <div>
-                  <div class="peer-name">{{ peer.hostname }}</div>
-                  <div class="peer-meta">{{ peer.ip }} · {{ peer.os || "未知系统" }} · {{ peer.online ? "在线" : "离线" }}</div>
-                </div>
-                <button class="btn btn-ghost btn-sm" :disabled="peerBusy || !peer.online" @click="syncPeer(peer.ip)">同步</button>
+            <!-- 手机端列不出设备：手动填对端 Tailscale 地址 -->
+            <template v-if="isMobile">
+              <p class="hint">手机端无法自动列出设备，请在上方设备状态里查看本机地址，并在这里填写对方的 Tailscale 地址（100.x.y.z）。</p>
+              <div class="key-row">
+                <input v-model="peerIp" type="text" placeholder="对方 Tailscale 地址，如 100.64.0.5" aria-label="对方 Tailscale 地址" />
+                <button class="btn btn-primary btn-sm" :disabled="peerBusy || !peerIp.trim()" @click="syncPeer(peerIp.trim())">同步</button>
               </div>
-            </div>
-            <button class="btn btn-primary btn-sm" :disabled="peerBusy || !tailscale?.peers.some((peer) => peer.online)" @click="syncPeers">
-              {{ peerBusy ? "同步中…" : "同步所有在线设备" }}
-            </button>
+            </template>
+            <template v-else>
+              <div v-if="!tailscale?.peers.length" class="hint">没有发现其他 Tailscale 设备。</div>
+              <div v-else class="peer-list">
+                <div v-for="peer in tailscale.peers" :key="peer.ip" class="peer">
+                  <div>
+                    <div class="peer-name">{{ peer.hostname }}</div>
+                    <div class="peer-meta">{{ peer.ip }} · {{ peer.os || "未知系统" }} · {{ peer.online ? "在线" : "离线" }}</div>
+                  </div>
+                  <button class="btn btn-ghost btn-sm" :disabled="peerBusy || !peer.online" @click="syncPeer(peer.ip)">同步</button>
+                </div>
+              </div>
+              <button class="btn btn-primary btn-sm" :disabled="peerBusy || !tailscale?.peers.some((peer) => peer.online)" @click="syncPeers">
+                {{ peerBusy ? "同步中…" : "同步所有在线设备" }}
+              </button>
+            </template>
           </div>
           <p v-if="peerMsg" class="sync-msg peer-msg">{{ peerMsg }}</p>
         </div>
@@ -629,3 +662,16 @@ h3 { font-size: 16px; font-weight: 700; }
 .peer-name { font-size: 13px; font-weight: 600; }
 .peer-meta { font-size: 11px; color: var(--text-muted); }
 </style>
+
+/* 复选框行（例如「同时同步 AI 配置与 API Key」） */
+.save-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.save-opt input {
+  accent-color: var(--primary);
+}

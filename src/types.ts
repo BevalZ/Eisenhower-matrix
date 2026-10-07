@@ -54,6 +54,8 @@ export interface Settings {
   openai_key_configured?: boolean;
   /** The OS credential store was unavailable, so secrets sit in the local database. */
   secrets_stored_in_plaintext?: boolean;
+  /** Whether the AI config (including the API key) travels with WebDAV / peer sync. */
+  sync_ai_key?: boolean;
 }
 
 export interface AiConfig {

@@ -13,8 +13,8 @@
 
 桌面端（Windows/macOS/Linux）与 **Android 端**功能齐备，代码在 `main`；所有安装包与 APK 都由 **GitHub Actions 远程构建**，本机不需要也不应该打包。Android **已配置正式签名**（上传密钥在仓库 Secrets 里），每次构建产出签名 APK + AAB。
 
-- 版本：`3.4.1`（`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 三处必须一起改，改完打 tag 发布）
-- 最新发布：[Release v3.4.1](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.1) ✅（tag 指向 `6a9948a`；8 个资产，Android 为正式签名的 18.1MB APK + 7.7MB AAB；修复安卓端停在悬浮球界面 + 全新四平台图标）
+- 版本：`3.4.2`（`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 三处必须一起改，改完打 tag 发布）
+- 最新发布：[Release v3.4.2](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.2)（详见第 8 轮）
 - 上一个发布：[Release v3.4.0](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.0)（`03d4083`，Android 资产已替换为签名版）
 - Android 签名：密钥库备份在 `D:\Github_repos\Hydens\android-signing\`（PKCS12 + 口令说明 + 生成脚本），证书 SHA-256 `A3:58:FA:49:…:62:A9`；**这份备份需要你自己再存一份**，丢了无法用同一签名更新已分发的应用
 - Android 验证基准：v3.4.1 的 [Android run 37559960499](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37559960499) ✅（图标渲染 + PKCS12 识别 + 证书指纹一致）与 [Release run 37559960546](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37559960546) ✅；签名链路首次验证 [run 37555424774](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37555424774) ✅
@@ -174,6 +174,18 @@ python scripts/ci.py watch main android.yml
 ---
 
 ## 8. 变更日志（新的一轮追加在最上面）
+
+### 第 8 轮 · 2026-10-07 · 真机反馈四项修复（版本 3.4.2）
+
+用户真机测试后提的四点，逐条处理：
+
+1. **工具栏与状态栏抢位置** → 手机端把 `.titlebar` 用 `order: 2` 挪到屏幕底部（`.content` 为 `order: 1`），`.app` 加 `padding-top/bottom: env(safe-area-inset-*)`，上方留白避开状态栏与下拉手势、下方留白给系统手势条；手机端仍隐藏品牌名与轴标签。注意：Android 15+ 强制 edge-to-edge，所以必须靠 safe-area 内边距把内容让开。
+2. **去掉点击输入、点空白处新建** → 删掉每个象限的「+ 快速添加」按钮与内联输入框（连带 `createTask/DEFAULT_PRIORITY/UNSCORED/useToast` 的引用与 `.q-add`/`.quick-add` 样式），改成 `.q-body` 上的点击处理：目标是容器本身或 `.empty` 占位块时 `emit("new-task")`，由 `App.vue` 打开 AI 向导。用户确认过语义：**一律走 AI 向导，但结尾仍可手动微调象限/优先级/截止时间**。
+3. **WebDAV 同步 AI Key** → `SyncEnvelope` 增加可选 `ai: SyncAiSettings{provider, base_url, model, api_key?, saved_at}`（旧对端不认识会忽略，向后兼容）；`secrets.rs` 新增 `ai_sync_snapshot` / `apply_remote_ai`，`db.rs` 新增 `sync_ai_key_enabled` / `set_sync_ai_key` / `ai_config_snapshot` / `mark_ai_saved` / `adopt_remote_ai`（**按 `saved_at` 比较新旧，旧设备不会覆盖新配置**）。WebDAV 同步、覆盖恢复、多端直连三条路径都带上并合并；保存 API Key / AI 配置时会记 `ai_saved_at`。默认开启同步，设置 → WebDAV 里有开关（提示 Key 是明文写进 WebDAV 文件的）。
+4. **手机端恢复 Tailscale** → 之前移动端直接返回「不支持」，现在改成 `local_tailscale_ip()`：UDP connect 到 `100.100.100.100:53`（不发包，只让系统按路由表挑源地址）拿到自己的 `100.x` 地址，无需任何新依赖。手机端 `peers` 为空 → 界面在「多端」里显示本机地址 + 手动填对方地址同步；`sync_one` 的成员校验改成「只有拿得到设备列表时才校验」，`exchange` 仍要求目标是 Tailscale 地址。
+
+**验证**：`cargo test` 26/26（新增 2 个：AI 配置按新旧采纳、开关读写）、`vue-tsc` 0 错误、`vitest` 38/38；版本 3.4.2。
+**未验证**：手机端 safe-area 实际留白效果、点空白新建的手感、手机 ↔ 手机/桌面 Tailscale 直连（需要两台在线设备）、WebDAV 带回 Key 的实际效果 —— 都需要真机复测。
 
 ### 第 7 轮 · 2026-10-06 · 修复真机「停在悬浮球界面」+ 全新应用图标（版本 3.4.1）
 

@@ -95,6 +95,47 @@ pub fn stored_in_plaintext(db: &Db) -> Result<bool, String> {
     Ok(db.get_setting(PLAINTEXT_FLAG)?.as_deref() == Some("1"))
 }
 
+/// provider 对应的凭据名。
+fn provider_key(provider: &str) -> &'static str {
+    if provider == "openai" {
+        OPENAI_API_KEY
+    } else {
+        API_KEY
+    }
+}
+
+/// 组装随同步一起走的 AI 配置；密钥只在用户允许「同步 AI 密钥」时才带上。
+pub fn ai_sync_snapshot(db: &Db) -> Result<crate::models::SyncAiSettings, String> {
+    let (provider, base_url, model, saved_at) = db.ai_config_snapshot()?;
+    let api_key = if db.sync_ai_key_enabled()? {
+        get(db, provider_key(&provider))?
+    } else {
+        None
+    };
+    Ok(crate::models::SyncAiSettings {
+        provider,
+        base_url,
+        model,
+        api_key,
+        saved_at,
+    })
+}
+
+/// 应用对端同步过来的 AI 配置，密钥写进凭据存储（移动端退化为应用数据库里的明文存储）。
+/// 返回是否更新了本机配置。
+pub fn apply_remote_ai(db: &Db, remote: &crate::models::SyncAiSettings) -> Result<bool, String> {
+    let changed = db.adopt_remote_ai(remote)?;
+    if let Some(key) = remote.api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        let provider = if remote.provider.trim().is_empty() {
+            db.ai_config_snapshot()?.0
+        } else {
+            remote.provider.trim().to_string()
+        };
+        set(db, provider_key(&provider), key)?;
+    }
+    Ok(changed)
+}
+
 /// Recompute the flag from what is actually in the settings table.
 fn refresh_plaintext_flag(db: &Db) {
     let any_plain = ALL

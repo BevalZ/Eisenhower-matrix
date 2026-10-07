@@ -140,7 +140,7 @@ onMounted(async () => {
       </div>
 
       <transition v-else name="view-fade" mode="out-in">
-        <QuadrantBoard v-if="view === 'board'" key="board" />
+        <QuadrantBoard v-if="view === 'board'" key="board" @new-task="showWizard = true" />
         <StatsPanel v-else key="stats" />
       </transition>
     </main>
@@ -157,8 +157,7 @@ onMounted(async () => {
   height: 100%;
   display: flex;
   flex-direction: column;
-}
-.titlebar {
+}.titlebar {
   display: flex;
   align-items: center;
   gap: 16px;

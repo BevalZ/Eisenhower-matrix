@@ -326,25 +326,37 @@ html.board-dragging .task-card:hover {
   #app {
     height: 100dvh;
   }
+  /* 工具栏挪到屏幕下方：上方留白躲开状态栏与下拉手势，下方留白给系统手势条 */
+  .app {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .content {
+    order: 1;
+  }
   .titlebar {
-    height: 48px;
-    padding: 0 8px;
+    order: 2;
+    height: auto;
+    min-height: 54px;
+    padding: 8px 10px;
     gap: 8px;
+    border-bottom: none;
+    border-top: 1px solid var(--border-light);
+    box-shadow: 0 -1px 6px rgba(0, 0, 0, 0.05);
+    padding-left: max(10px, env(safe-area-inset-left));
+    padding-right: max(10px, env(safe-area-inset-right));
   }
   .brand-name {
     display: none;
   }
   .nav-btn {
-    padding: 5px 10px;
+    padding: 6px 12px;
   }
   .actions {
     gap: 4px;
   }
-  .content {
-    padding-bottom: env(safe-area-inset-bottom);
-  }
   .board {
-    padding: 8px;
+    padding: 6px 8px 10px;
   }
   .grid {
     gap: 8px;

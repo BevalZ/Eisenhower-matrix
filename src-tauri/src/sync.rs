@@ -162,7 +162,46 @@ impl SyncControl {
     }
 }
 
+/// 手机端没有 `tailscale` 命令可以查询，但 Tailscale 的地址确实在本机接口上：
+/// 用一次 UDP connect（不发包，只让系统按路由表挑源地址）就能拿到自己的 100.x 地址。
+/// 100.100.100.100 是 Tailscale 内部的 MagicDNS 地址，只有连着 Tailscale 时才可达。
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn local_tailscale_ip() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("100.100.100.100:53").ok()?;
+    match sock.local_addr().ok()?.ip() {
+        IpAddr::V4(ip) if is_cgnat(ip) => Some(ip.to_string()),
+        _ => None,
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn mobile_status() -> TailscaleStatus {
+    match local_tailscale_ip() {
+        Some(ip) => TailscaleStatus {
+            running: true,
+            hostname: String::new(),
+            ip,
+            // 手机端列不出其他设备，改成手动填对端地址
+            peers: Vec::new(),
+            message: "手机端无法自动列出其他设备：在下面手动填写对方的 Tailscale 地址即可同步".into(),
+        },
+        None => TailscaleStatus {
+            running: false,
+            hostname: String::new(),
+            ip: String::new(),
+            peers: Vec::new(),
+            message: "未检测到 Tailscale 地址：请确认 Tailscale 已连接，并允许本应用使用 VPN".into(),
+        },
+    }
+}
+
 pub async fn tailscale_status() -> TailscaleStatus {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        mobile_status()
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     match tailscale_status_json().await {
         Ok(raw) => parse_status(&raw),
         Err(message) => TailscaleStatus {
@@ -184,6 +223,7 @@ pub async fn exchange(db: &Db, ip: &str, port: u16) -> Result<usize, String> {
         device_id: db.device_id()?,
         tasks: db.sync_snapshot()?,
         schema: SYNC_SCHEMA,
+        ai: Some(crate::secrets::ai_sync_snapshot(db)?),
     };
     // Report an oversized history locally instead of letting the peer answer 400.
     let body = serde_json::to_vec(&envelope).map_err(|e| e.to_string())?;
@@ -216,6 +256,9 @@ pub async fn exchange(db: &Db, ip: &str, port: u16) -> Result<usize, String> {
         .await
         .map_err(|e| format!("无法解析对方数据: {e}"))?;
     let applied = db.merge_remote(&remote.tasks, remote.schema)?;
+    if let Some(ai) = remote.ai.as_ref() {
+        crate::secrets::apply_remote_ai(db, ai)?;
+    }
     if applied > 0 {
         notify_tasks_changed();
     }
@@ -247,13 +290,6 @@ async fn sync_online(db: &Db) -> Result<(), String> {
     } else {
         Err(errors.join("；"))
     }
-}
-
-/// Mobile has no `tailscale` CLI to ask, and the Tailscale app does not expose its peer list,
-/// so peer-to-peer sync is desktop-only; the settings page points mobile at WebDAV instead.
-#[cfg(any(target_os = "android", target_os = "ios"))]
-async fn tailscale_status_json() -> Result<String, String> {
-    Err("手机端暂不支持 Tailscale 直连同步，请使用 WebDAV 同步".into())
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -452,6 +488,9 @@ async fn dispatch(db: &Db, request: &HttpRequest) -> Result<String, String> {
     let envelope: SyncEnvelope = serde_json::from_slice(&request.body)
         .map_err(|e| format!("JSON 解析失败: {e}"))?;
     let applied = db.merge_remote(&envelope.tasks, envelope.schema)?;
+    if let Some(ai) = envelope.ai.as_ref() {
+        crate::secrets::apply_remote_ai(db, ai)?;
+    }
     if applied > 0 {
         notify_tasks_changed();
     }
@@ -459,6 +498,7 @@ async fn dispatch(db: &Db, request: &HttpRequest) -> Result<String, String> {
         device_id: db.device_id()?,
         tasks: db.sync_snapshot()?,
         schema: SYNC_SCHEMA,
+        ai: Some(crate::secrets::ai_sync_snapshot(db)?),
     };
 
     serde_json::to_string(&response).map_err(|e| e.to_string())

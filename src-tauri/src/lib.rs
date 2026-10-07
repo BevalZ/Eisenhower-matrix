@@ -85,7 +85,14 @@ fn get_settings(state: tauri::State<AppState>) -> Result<Settings, String> {
         jevai_key_configured: jevai_key,
         openai_key_configured: openai_key,
         secrets_stored_in_plaintext: secrets::stored_in_plaintext(&state.db)?,
+        sync_ai_key: state.db.sync_ai_key_enabled()?,
     })
+}
+
+/// 是否把 AI 配置（含 API Key）一起同步到 WebDAV / 对端。
+#[tauri::command]
+fn set_sync_ai_key(enabled: bool, state: tauri::State<AppState>) -> Result<(), String> {
+    state.db.set_sync_ai_key(enabled)
 }
 
 /// (provider, base_url, model)
@@ -118,7 +125,9 @@ fn save_ai_config(config: AiConfig, state: tauri::State<AppState>) -> Result<(),
         }
         _ => return Err("未知的 AI 服务".into()),
     }
-    state.db.set_setting("ai_provider", &config.provider)
+    state.db.set_setting("ai_provider", &config.provider)?;
+    // 记下保存时间，同步时用它判断谁的 AI 配置更新
+    state.db.mark_ai_saved()
 }
 
 
@@ -128,7 +137,9 @@ fn set_api_key(key: String, state: tauri::State<AppState>) -> Result<(), String>
     if key.is_empty() {
         return Err("API Key 不能为空".into());
     }
-    secrets::set(&state.db, secrets::API_KEY, key)
+    secrets::set(&state.db, secrets::API_KEY, key)?;
+    // 记下保存时间，同步时用它判断谁的 AI 配置更新
+    state.db.mark_ai_saved()
 }
 
 #[tauri::command]
@@ -314,23 +325,30 @@ async fn sync_to_webdav(state: tauri::State<'_, AppState>) -> Result<SyncResult,
     // Download → merge by uid (last write wins) → upload the merged result, so two
     // devices sharing one WebDAV file don't overwrite each other.
     let remote = webdav::download(&url, &username, &password).await?;
-    let (incoming, schema) = db::parse_webdav_payload(remote.as_deref())?;
+    let (incoming, schema, remote_ai) = db::parse_webdav_payload(remote.as_deref())?;
     let applied = state.db.merge_remote(&incoming, schema)?;
+    // AI 配置（含可选密钥）也一起合并：对端更晚保存的配置会覆盖本机。
+    let ai_changed = match remote_ai.as_ref() {
+        Some(ai) => secrets::apply_remote_ai(&state.db, ai)?,
+        None => false,
+    };
     let tasks = state.db.sync_snapshot()?;
     let uploaded = tasks.iter().filter(|t| t.deleted_at.is_none()).count();
     let envelope = SyncEnvelope {
         device_id: state.db.device_id()?,
         tasks,
         schema: SYNC_SCHEMA,
+        ai: Some(secrets::ai_sync_snapshot(&state.db)?),
     };
     let body = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
     webdav::upload(&url, &username, &password, body).await?;
+    let ai_note = if ai_changed { "，并更新了 AI 配置" } else { "" };
     Ok(SyncResult {
         success: true,
         message: if remote.is_none() {
             format!("WebDAV 上还没有数据，已上传 {uploaded} 个任务")
         } else {
-            format!("同步完成：本机更新了 {applied} 条，上传了 {uploaded} 个任务")
+            format!("同步完成：本机更新了 {applied} 条{ai_note}，上传了 {uploaded} 个任务")
         },
         task_count: applied,
     })
@@ -342,10 +360,19 @@ async fn restore_from_webdav(state: tauri::State<'_, AppState>) -> Result<SyncRe
     let json = webdav::download(&url, &username, &password)
         .await?
         .ok_or("WebDAV 上还没有备份文件")?;
+    // 覆盖本机任务的同时也把 AI 配置带过来（「用 WebDAV 覆盖本机」的语义）
+    let ai_changed = match db::parse_webdav_payload(Some(&json))?.2 {
+        Some(ai) => secrets::apply_remote_ai(&state.db, &ai)?,
+        None => false,
+    };
     let count = state.db.restore_webdav(&json)?;
     Ok(SyncResult {
         success: true,
-        message: format!("已从 WebDAV 恢复 {} 个任务", count),
+        message: if ai_changed {
+            format!("已从 WebDAV 恢复 {count} 个任务，并更新了 AI 配置")
+        } else {
+            format!("已从 WebDAV 恢复 {count} 个任务")
+        },
         task_count: count,
     })
 }
@@ -462,7 +489,8 @@ async fn sync_one(
     if status.ip == ip {
         return Err("不能和本机同步".into());
     }
-    if !status.peers.iter().any(|peer| peer.ip == ip && peer.online) {
+    // 手机端列不出其他设备（peers 为空），这时不校验成员关系，只要求是 Tailscale 地址（exchange 里再查一次）。
+    if !status.peers.is_empty() && !status.peers.iter().any(|peer| peer.ip == ip && peer.online) {
         return Err("这台设备不在当前 Tailscale 网络，或当前不在线".into());
     }
     sync::exchange(&state.db, ip, state.db.sync_port()?).await
@@ -513,6 +541,7 @@ pub fn run() {
             get_settings,
             set_api_key,
             save_ai_config,
+            set_sync_ai_key,
             set_theme,
             save_webdav,
             get_webdav_config,

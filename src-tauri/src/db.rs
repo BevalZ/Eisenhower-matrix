@@ -728,6 +728,63 @@ impl Db {
         Ok(self.require_sync_secret().is_ok())
     }
 
+    // ---- AI config that travels with sync ----
+    //
+    // 换设备时不必重新填 Key：AI 配置随同步载荷一起走（默认开启）。
+    // 密钥是明文，会落在 WebDAV 文件里，因此可以在设置里关掉。
+
+    pub fn sync_ai_key_enabled(&self) -> Result<bool, String> {
+        Ok(self.get_setting("sync_ai_key")?.as_deref() != Some("0"))
+    }
+
+    pub fn set_sync_ai_key(&self, enabled: bool) -> Result<(), String> {
+        self.set_setting("sync_ai_key", if enabled { "1" } else { "0" })
+    }
+
+    /// (provider, base_url, model, saved_at) —— 本机当前的 AI 配置。
+    pub fn ai_config_snapshot(&self) -> Result<(String, String, String, i64), String> {
+        let provider = self.get_setting("ai_provider")?.unwrap_or_else(|| "jevai".into());
+        let base_url = self.get_setting("ai_base_url")?.unwrap_or_default();
+        let model = self.get_setting("ai_model")?.unwrap_or_default();
+        let saved_at = self
+            .get_setting("ai_saved_at")?
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
+        Ok((provider, base_url, model, saved_at))
+    }
+
+    /// 记下「AI 配置是什么时候在这台设备上保存的」，同步时用来比较新旧。
+    pub fn mark_ai_saved(&self) -> Result<(), String> {
+        self.set_setting("ai_saved_at", &Utc::now().timestamp_millis().to_string())
+    }
+
+    /// 用同步过来的 AI 配置覆盖本机：只有对端更新（`saved_at` 更大）才生效。
+    /// 返回是否真的改了本机配置。
+    pub fn adopt_remote_ai(&self, remote: &SyncAiSettings) -> Result<bool, String> {
+        let (local_provider, local_base, local_model, local_saved) = self.ai_config_snapshot()?;
+        let has_local = !local_provider.is_empty() && local_saved > 0;
+        if has_local && remote.saved_at <= local_saved {
+            return Ok(false);
+        }
+        if remote.provider.is_empty() && remote.api_key.is_none() {
+            return Ok(false);
+        }
+        if !remote.provider.is_empty() {
+            self.set_setting("ai_provider", remote.provider.trim())?;
+        }
+        if !remote.base_url.is_empty() || !remote.provider.is_empty() {
+            self.set_setting("ai_base_url", remote.base_url.trim())?;
+        }
+        if !remote.model.is_empty() || !remote.provider.is_empty() {
+            self.set_setting("ai_model", remote.model.trim())?;
+        }
+        if remote.saved_at > 0 {
+            self.set_setting("ai_saved_at", &remote.saved_at.to_string())?;
+        }
+        let _ = (local_base, local_model);
+        Ok(true)
+    }
+
     pub fn sync_snapshot(&self) -> Result<Vec<SyncTask>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         sync_tasks(&conn)
@@ -1025,12 +1082,14 @@ fn sync_tasks(conn: &Connection) -> Result<Vec<SyncTask>, String> {
 /// `SyncEnvelope` is used as-is, and a legacy `BackupData` upload is merged at
 /// schema 0 because older builds may not have written `due_at`. Legacy tasks
 /// without a uid can't be matched to local ones and are skipped.
-pub fn parse_webdav_payload(json: Option<&str>) -> Result<(Vec<SyncTask>, u32), String> {
+pub fn parse_webdav_payload(
+    json: Option<&str>,
+) -> Result<(Vec<SyncTask>, u32, Option<SyncAiSettings>), String> {
     let Some(json) = json else {
-        return Ok((Vec::new(), SYNC_SCHEMA));
+        return Ok((Vec::new(), SYNC_SCHEMA, None));
     };
     if let Ok(envelope) = serde_json::from_str::<SyncEnvelope>(json) {
-        return Ok((envelope.tasks, envelope.schema));
+        return Ok((envelope.tasks, envelope.schema, envelope.ai));
     }
     let backup: BackupData =
         serde_json::from_str(json).map_err(|e| format!("WebDAV 文件解析失败: {}", e))?;
@@ -1055,7 +1114,7 @@ pub fn parse_webdav_payload(json: Option<&str>) -> Result<(Vec<SyncTask>, u32), 
             due_at: t.due_at,
         })
         .collect();
-    Ok((tasks, 0))
+    Ok((tasks, 0, None))
 }
 
 fn read_sync_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncTask> {
@@ -1415,6 +1474,55 @@ mod tests {
     }
 
     #[test]
+    fn remote_ai_config_wins_only_when_newer() {
+        let db = Db::open_in_memory().unwrap();
+        // 本机先没配置：对端的配置会被采纳
+        assert!(db.adopt_remote_ai(&SyncAiSettings {
+            provider: "openai".into(),
+            base_url: "http://localhost:11434/v1".into(),
+            model: "qwen2.5:7b".into(),
+            api_key: None,
+            saved_at: 1000,
+        })
+        .unwrap());
+        let (provider, base_url, model, saved_at) = db.ai_config_snapshot().unwrap();
+        assert_eq!((provider.as_str(), base_url.as_str(), model.as_str(), saved_at),
+                   ("openai", "http://localhost:11434/v1", "qwen2.5:7b", 1000));
+
+        // 对端更旧：不动本机
+        assert!(!db.adopt_remote_ai(&SyncAiSettings {
+            provider: "jevai".into(),
+            base_url: String::new(),
+            model: String::new(),
+            api_key: None,
+            saved_at: 500,
+        })
+        .unwrap());
+        assert_eq!(db.ai_config_snapshot().unwrap().0, "openai");
+
+        // 对端更新：采纳
+        assert!(db.adopt_remote_ai(&SyncAiSettings {
+            provider: "jevai".into(),
+            base_url: String::new(),
+            model: String::new(),
+            api_key: None,
+            saved_at: 2000,
+        })
+        .unwrap());
+        assert_eq!(db.ai_config_snapshot().unwrap().0, "jevai");
+    }
+
+    #[test]
+    fn ai_key_sync_can_be_turned_off() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(db.sync_ai_key_enabled().unwrap(), "默认开启");
+        db.set_sync_ai_key(false).unwrap();
+        assert!(!db.sync_ai_key_enabled().unwrap());
+        db.set_sync_ai_key(true).unwrap();
+        assert!(db.sync_ai_key_enabled().unwrap());
+    }
+
+    #[test]
     fn duplicate_uids_are_repaired_before_the_unique_index() {
         let db = Db::open_in_memory().unwrap();
         let a = db.create_task(&input("a", 1, 50.0)).unwrap();
@@ -1500,12 +1608,13 @@ mod tests {
 
     /// One WebDAV round as `sync_to_webdav` does it, with `file` standing in for the server.
     fn webdav_round(db: &Db, file: &mut Option<String>) -> usize {
-        let (incoming, schema) = parse_webdav_payload(file.as_deref()).unwrap();
+        let (incoming, schema, _ai) = parse_webdav_payload(file.as_deref()).unwrap();
         let applied = db.merge_remote(&incoming, schema).unwrap();
         let envelope = SyncEnvelope {
             device_id: db.device_id().unwrap(),
             tasks: db.sync_snapshot().unwrap(),
             schema: SYNC_SCHEMA,
+            ai: None,
         };
         *file = Some(serde_json::to_string(&envelope).unwrap());
         applied
@@ -1581,7 +1690,7 @@ mod tests {
         task.as_object_mut().unwrap().remove("due_at");
         let legacy = legacy.to_string();
 
-        let (incoming, schema) = parse_webdav_payload(Some(&legacy)).unwrap();
+        let (incoming, schema, _ai) = parse_webdav_payload(Some(&legacy)).unwrap();
         assert_eq!(schema, 0);
         db.merge_remote(&incoming, schema).unwrap();
         let t = db.get_tasks().unwrap().remove(0);
