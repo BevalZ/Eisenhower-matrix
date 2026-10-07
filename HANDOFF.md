@@ -14,10 +14,11 @@
 桌面端（Windows/macOS/Linux）与 **Android 端**功能齐备，代码在 `main`；所有安装包与 APK 都由 **GitHub Actions 远程构建**，本机不需要也不应该打包。Android **已配置正式签名**（上传密钥在仓库 Secrets 里），每次构建产出签名 APK + AAB。
 
 - 版本：`3.4.1`（`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 三处必须一起改，改完打 tag 发布）
-- 最新发布：[Release v3.4.0](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.0) ✅（tag 指向 `03d4083`；8 个资产，Android 为**正式签名**的 18.0MB APK + 7.6MB AAB）
+- 最新发布：[Release v3.4.1](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.1) ✅（tag 指向 `6a9948a`；8 个资产，Android 为正式签名的 18.1MB APK + 7.7MB AAB；修复安卓端停在悬浮球界面 + 全新四平台图标）
+- 上一个发布：[Release v3.4.0](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.0)（`03d4083`，Android 资产已替换为签名版）
 - Android 签名：密钥库备份在 `D:\Github_repos\Hydens\android-signing\`（PKCS12 + 口令说明 + 生成脚本），证书 SHA-256 `A3:58:FA:49:…:62:A9`；**这份备份需要你自己再存一份**，丢了无法用同一签名更新已分发的应用
-- Android 验证基准：签名构建 [run 37555424774](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37555424774) ✅（PKCS12 识别 + 指纹与本地一致）；无密钥时的调试包构建 [run 37441422009](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37441422009) ✅；一次性密钥自检 [run 37443294373](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37443294373) ✅
-- `main` 当前基线（commit `c9dfec0`）：`Android` 工作流会走 release + 签名路径；`CI` [run 37462398442](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37462398442) ✅ 为最近一次全绿记录
+- Android 验证基准：v3.4.1 的 [Android run 37559960499](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37559960499) ✅（图标渲染 + PKCS12 识别 + 证书指纹一致）与 [Release run 37559960546](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37559960546) ✅；签名链路首次验证 [run 37555424774](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37555424774) ✅
+- `main` 当前基线（commit `6a9948a`）：`Android` 工作流走 release + 签名路径并会自动把 APK/AAB 挂到 tag 的 Release
 
 ---
 
@@ -183,6 +184,9 @@ python scripts/ci.py watch main android.yml
 - **应用图标**：接入用户提供的分平台 SVG，放进 `src-tauri/icons-src/`（`icon-manifest.json` 指明 `default`=windows.svg、`android_bg`/`android_fg` 为自适应图标两层、`android_fg_scale=100`）。生成了全新 `src-tauri/icons/**`：通用/Windows 用小圆角方形、macOS 的 `icon.icns` 与 `ios/**` 用全出血版、Android 含 `mipmap-anydpi-v26/ic_launcher.xml` + 各密度前景/背景层；`android.yml` 在 `tauri android init` 之后加了一步 `tauri icon src-tauri/icons-src/icon-manifest.json` 把图标渲染进生成的 Android 工程。
 - **验证**：像素采样确认四个象限配色与用户配色一致（左上粉橙 / 右上天蓝 / 左下薄荷绿 / 右下淡紫）；Android 分层尺寸 108/162/216/324/432 与官方要求一致；`cargo check` 通过（移动端那段代码用「临时去掉 cfg 编译一次再还原」的方式验证过，因为本机没有 Android target）；`vue-tsc` 0 错误；`vitest` 38/38。
 - **发布**：版本 3.4.1，`release.yml` 文案改为「本次更新」（修复 + 图标 + 功能一览）。
+- **发布结果（已验证）**：[Release v3.4.1](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.1) 已发布，8 个资产：`Eisenhower-Matrix_3.4.1_android-arm64-release.apk` 18.1MB（签名）+ `..._android.aab` 7.7MB、Windows 安装版 3.8MB + 便携版 14.6MB、macOS 两个 dmg（5.4/5.5MB）、Linux deb 7.1MB + AppImage 81.4MB。`Release`（四平台）与 `Android` 两个工作流均 success；Android 日志确认：「Apply the app icons to the Android project」创建了各密度 `ic_launcher_foreground/background/round/launcher`、`Keystore type: PKCS12`、签名证书指纹 `a358fa49…` 与配置的密钥一致。
+- **APK 内图标已核对**：release APK 的资源名被 AGP 缩短（如 `res/FS.png`），按尺寸 + 像素抽样找到 96×96 启动图标，四个象限颜色与配色一致（左上粉橙 / 右上天蓝 / 左下薄荷绿 / 右下淡紫），说明新图标确实打进了安装包。
+- **三层修复的确定性说明**：`tauri.android.conf.json` 依赖 Tauri 的平台配置合并语义（数组按替换处理），日志不会打印合并结果；但 `App.vue` 的 UA 同步判断是确定性的——手机端无论窗口标签是什么都不会渲染悬浮球，所以「打开即看板」不依赖配置合并的结果。
 - **未解决/说明**：Android 12+ 的系统启动画面（短暂显示应用图标 + 主题底色）是系统行为，无法完全移除；如需进一步弱化观感，要改 `gen/android` 的主题文件，而 `gen/android` 不入库，需在 CI 里打补丁（未做，等需求确认）。
 
 ### 第 6 轮 · 2026-10-06 · 配置 Android 正式签名（提交 `c9dfec0`）
