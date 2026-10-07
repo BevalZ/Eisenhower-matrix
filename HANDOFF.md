@@ -13,7 +13,7 @@
 
 桌面端（Windows/macOS/Linux）与 **Android 端**功能齐备，代码在 `main`；所有安装包与 APK 都由 **GitHub Actions 远程构建**，本机不需要也不应该打包。Android **已配置正式签名**（上传密钥在仓库 Secrets 里），每次构建产出签名 APK + AAB。
 
-- 版本：`3.4.0`（`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 三处必须一起改，改完打 tag 发布）
+- 版本：`3.4.1`（`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 三处必须一起改，改完打 tag 发布）
 - 最新发布：[Release v3.4.0](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.0) ✅（tag 指向 `03d4083`；8 个资产，Android 为**正式签名**的 18.0MB APK + 7.6MB AAB）
 - Android 签名：密钥库备份在 `D:\Github_repos\Hydens\android-signing\`（PKCS12 + 口令说明 + 生成脚本），证书 SHA-256 `A3:58:FA:49:…:62:A9`；**这份备份需要你自己再存一份**，丢了无法用同一签名更新已分发的应用
 - Android 验证基准：签名构建 [run 37555424774](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37555424774) ✅（PKCS12 识别 + 指纹与本地一致）；无密钥时的调试包构建 [run 37441422009](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37441422009) ✅；一次性密钥自检 [run 37443294373](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37443294373) ✅
@@ -173,6 +173,17 @@ python scripts/ci.py watch main android.yml
 ---
 
 ## 8. 变更日志（新的一轮追加在最上面）
+
+### 第 7 轮 · 2026-10-06 · 修复真机「停在悬浮球界面」+ 全新应用图标（版本 3.4.1）
+
+- **真机问题**：安卓装上后打开停在悬浮球界面、进不去看板。原因：配置里有两个窗口，Android 会把第二个（`floating-ball`）也建成 activity 并推到前台，而前端按 `window.label === "floating-ball"` 就渲染球。三层修复：
+  1. 新增 `src-tauri/tauri.android.conf.json` 平台覆盖配置，Android 只保留 `main` 窗口（Tauri 会按平台自动合并 `tauri.<platform>.conf.json`）；
+  2. `lib.rs` 的 `setup` 里在 Android/iOS 上主动 `close()` 该窗口兜底；
+  3. `App.vue` 用 UA 同步判断，手机端永不渲染球（避免 platform 命令返回前先闪一下）。
+- **应用图标**：接入用户提供的分平台 SVG，放进 `src-tauri/icons-src/`（`icon-manifest.json` 指明 `default`=windows.svg、`android_bg`/`android_fg` 为自适应图标两层、`android_fg_scale=100`）。生成了全新 `src-tauri/icons/**`：通用/Windows 用小圆角方形、macOS 的 `icon.icns` 与 `ios/**` 用全出血版、Android 含 `mipmap-anydpi-v26/ic_launcher.xml` + 各密度前景/背景层；`android.yml` 在 `tauri android init` 之后加了一步 `tauri icon src-tauri/icons-src/icon-manifest.json` 把图标渲染进生成的 Android 工程。
+- **验证**：像素采样确认四个象限配色与用户配色一致（左上粉橙 / 右上天蓝 / 左下薄荷绿 / 右下淡紫）；Android 分层尺寸 108/162/216/324/432 与官方要求一致；`cargo check` 通过（移动端那段代码用「临时去掉 cfg 编译一次再还原」的方式验证过，因为本机没有 Android target）；`vue-tsc` 0 错误；`vitest` 38/38。
+- **发布**：版本 3.4.1，`release.yml` 文案改为「本次更新」（修复 + 图标 + 功能一览）。
+- **未解决/说明**：Android 12+ 的系统启动画面（短暂显示应用图标 + 主题底色）是系统行为，无法完全移除；如需进一步弱化观感，要改 `gen/android` 的主题文件，而 `gen/android` 不入库，需在 CI 里打补丁（未做，等需求确认）。
 
 ### 第 6 轮 · 2026-10-06 · 配置 Android 正式签名（提交 `c9dfec0`）
 

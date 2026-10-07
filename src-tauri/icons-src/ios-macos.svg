@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF9A8B"/>
+      <stop offset="100%" stop-color="#FFB88C"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#B8D4FF"/>
+      <stop offset="100%" stop-color="#5EB8FF"/>
+    </linearGradient>
+    <linearGradient id="g3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#C8F0DC"/>
+      <stop offset="100%" stop-color="#5EE8B0"/>
+    </linearGradient>
+    <linearGradient id="g4" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E0CCFF"/>
+      <stop offset="100%" stop-color="#A890FF"/>
+    </linearGradient>
+    <clipPath id="clip">
+      <rect x="0" y="0" width="1024" height="1024" rx="225" ry="225"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#clip)">
+    <rect x="0" y="0" width="512" height="512" fill="url(#g1)"/>
+    <rect x="512" y="0" width="512" height="512" fill="url(#g2)"/>
+    <rect x="0" y="512" width="512" height="512" fill="url(#g3)"/>
+    <rect x="512" y="512" width="512" height="512" fill="url(#g4)"/>
+    <rect x="498" y="0" width="28" height="1024" fill="#FFFFFF"/>
+    <rect x="0" y="498" width="1024" height="28" fill="#FFFFFF"/>
+    <circle cx="512" cy="512" r="56" fill="#FFFFFF"/>
+  </g>
+</svg>

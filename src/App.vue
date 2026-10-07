@@ -43,7 +43,9 @@ function onGlobalKeyDown(e: KeyboardEvent) {
 onUnmounted(() => window.removeEventListener("keydown", onGlobalKeyDown));
 
 const windowLabel = getCurrentWindow().label;
-const isBallWindow = computed(() => windowLabel === "floating-ball");
+// 手机端没有悬浮球窗口；用 UA 同步判断（而不是等 platform 命令返回），避免首帧先闪一下球界面
+const isTouchDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+const isBallWindow = computed(() => !isTouchDevice && windowLabel === "floating-ball");
 
 async function minimizeToBall() {
   try {

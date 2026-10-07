@@ -536,6 +536,13 @@ pub fn run() {
             platform,
         ])
         .setup(|app| {
+            // 手机上没有「悬浮球」这种窗口形态：tauri.android.conf.json 已经去掉了它，这里再兜一层，
+            // 万一它仍被创建出来也立刻关掉，免得球被推到前台挡住看板。
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            if let Some(ball) = app.get_webview_window("floating-ball") {
+                let _ = ball.close();
+            }
+
             // The database is opened here rather than while building the app, because the
             // mobile data directory is only known once the app handle exists.
             let dir = data_dir(app.handle())?;
