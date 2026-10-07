@@ -11,12 +11,13 @@
 
 ## 0. 当前状态（一句话）
 
-桌面端（Windows/macOS/Linux）与 **Android 端**功能齐备，代码在 `main`；所有安装包与 APK 都由 **GitHub Actions 远程构建**，本机不需要也不应该打包。Android 目前产出**调试签名 APK**（可安装测试），正式签名所需的上传密钥（keystore）**尚未配置**，但工作流与签名流程已用一次性密钥实测通过。
+桌面端（Windows/macOS/Linux）与 **Android 端**功能齐备，代码在 `main`；所有安装包与 APK 都由 **GitHub Actions 远程构建**，本机不需要也不应该打包。Android **已配置正式签名**（上传密钥在仓库 Secrets 里），每次构建产出签名 APK + AAB。
 
 - 版本：`3.4.0`（`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 三处必须一起改，改完打 tag 发布）
-- 最新发布：[Release v3.4.0](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.0) ✅（tag 指向 `03d4083`，7 个资产，含 Android APK）
-- Android 验证基准：调试包构建 [run 37441422009](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37441422009) ✅；签名自检 [run 37443294373](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37443294373) ✅（release APK 19MB + AAB 7.7MB，均已签名）
-- `main` 当前基线（commit `28b8933`）：Android [run 37462398269](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37462398269) ✅（产物 `android-28b8933…` 47.1MB）、CI [run 37462398442](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37462398442) ✅；合并进 main 后的首次构建是 [run 37461559211](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37461559211) ✅（`0dd4531`）
+- 最新发布：[Release v3.4.0](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.0) ✅（tag 指向 `03d4083`；8 个资产，Android 为**正式签名**的 18.0MB APK + 7.6MB AAB）
+- Android 签名：密钥库备份在 `D:\Github_repos\Hydens\android-signing\`（PKCS12 + 口令说明 + 生成脚本），证书 SHA-256 `A3:58:FA:49:…:62:A9`；**这份备份需要你自己再存一份**，丢了无法用同一签名更新已分发的应用
+- Android 验证基准：签名构建 [run 37555424774](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37555424774) ✅（PKCS12 识别 + 指纹与本地一致）；无密钥时的调试包构建 [run 37441422009](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37441422009) ✅；一次性密钥自检 [run 37443294373](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37443294373) ✅
+- `main` 当前基线（commit `c9dfec0`）：`Android` 工作流会走 release + 签名路径；`CI` [run 37462398442](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37462398442) ✅ 为最近一次全绿记录
 
 ---
 
@@ -159,7 +160,7 @@ python scripts/ci.py watch main android.yml
 按优先级（P0 阻塞使用 → P3 优化）：
 
 1. **P0 · Android 真机未验证**：没有人装到手机上跑过。重点看：能启动、看板可用、触屏「滑动滚动 / 长按 0.26s 拖动」手感、AI 分类与 WebDAV 在移动网络下是否正常。
-2. **P1 · 正式签名未配置**：加了 4 个 Secrets 后同一条工作流自动产出签名 APK+AAB（流程已自检通过）。本机没有 JDK，无法本地生成 keystore。
+2. **已完成 · Android 正式签名**：上传密钥已生成并写入 4 个 Secrets（见第 6 轮），构建默认产出签名 APK+AAB。**待你做的事**：把 `D:\Github_repos\Hydens\android-signing\`（密钥库 + 口令说明）另存到安全位置；要轮换密钥时按 README「正式签名」一节操作，注意换密钥后已安装用户需卸载重装。
 3. **P2 · 已完成任务的墓碑会长期增长**：`prune_tombstones` 只清理**未完成**任务的墓碑（180 天），已完成墓碑保留是为了统计页的完成历史；同步包上限 16MB（约 7 万条），到顶会给出可操作提示。要彻底解决需要分页同步协议 + 完成历史的独立统计表。
 4. **P2 · `Db::open` 失败仍然是 panic**：重复 uid 这个现实诱因已修（启动时自动重铸）。要做成错误弹窗，得在 `setup` 里弹原生对话框，而 `setup` 跑在事件循环启动前，blocking 对话框有死锁风险，需要单独设计。
 5. **P3 · 锁文件未入库**：`package-lock.json`、`src-tauri/Cargo.lock` 目前未跟踪，CI 每次重新解析依赖（可复现性弱）。要固定版本就把它们提交。
@@ -172,6 +173,15 @@ python scripts/ci.py watch main android.yml
 ---
 
 ## 8. 变更日志（新的一轮追加在最上面）
+
+### 第 6 轮 · 2026-10-06 · 配置 Android 正式签名（提交 `c9dfec0`）
+
+- **密钥已生成并配置**：本机 Python（`cryptography` + `pynacl`，不需要 JDK）生成 PKCS12 上传密钥，别名 `upload`，有效期 10000 天；4 个 Secrets（`ANDROID_KEY_BASE64` / `ANDROID_KEY_ALIAS` / `ANDROID_STORE_PASSWORD` / `ANDROID_KEY_PASSWORD`）已写入仓库。密钥与口令只落在本机备份目录 `D:\Github_repos\Hydens\android-signing\`（`eisenhower-upload.p12` + `凭据与说明.txt` + 生成脚本），**没有**打印到对话或日志里。
+- **证书指纹（可公开）**：`A3:58:FA:49:0A:FC:44:7D:F0:FC:35:50:1C:64:D4:C8:B3:79:11:86:A7:3A:F5:D3:9E:A6:2C:48:8E:91:62:A9`
+- **工作流加固**：签名步骤先探测密钥库格式（JKS / PKCS12）再按扩展名改名（apksigner 靠扩展名判类型），签名后执行 `apksigner verify --print-certs` + `jarsigner -verify`，并把密钥库条目列表与证书指纹打进日志，方便核对；密钥库读不出来会给出明确报错。
+- **端到端验证**：推 `ci/verify-signing` 分支触发真实签名构建（[run 37555424774](https://github.com/BevalZ/Eisenhower-matrix/actions/runs/37555424774) ✅）：`Build release APK + AAB` 与 `Sign APK and AAB` 均 success，日志里 `Keystore type: PKCS12`、证书主题 `CN=Eisenhower Matrix Upload Key`、以及与上文完全一致的 SHA-256 指纹；产物 `Eisenhower-Matrix_c9dfec0_android-arm64-release.apk` 18.0MB + `..._android.aab` 7.6MB。验证完把工作流改动快进合并到 `main`（`c9dfec0`）并删掉临时分支。
+- **v3.4.0 Release 资产已更新**：用签名版（18.0MB APK + 7.6MB AAB，上传后 GitHub 返回的 sha256 与本地一致）替换掉原来的 174MB 调试包，并同步改了 Release 说明里的 Android 文件名与签名描述。注意：APK 是用**同一份应用代码**构建的（与 tag 的差异只在 CI 工作流文件），所以没有重新打版本号。
+- **后续行为**：Secrets 存在时，`Android` 工作流默认走 release + 签名路径（不再产出 174MB 的调试包）；`release.yml` 的说明文案也已同步为「正式签名」。
 
 ### 第 5 轮 · 2026-10-06 · 发布 `v3.4.0`
 

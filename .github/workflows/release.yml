@@ -89,9 +89,9 @@ jobs:
             | Windows | NSIS 安装版 `.exe` 或便携版 `.exe`（免安装） |
             | macOS | `.dmg`（Intel / Apple Silicon） |
             | Linux | `.deb` 或 `.AppImage` |
-            | Android | `Eisenhower-Matrix_*_android-arm64-debug.apk` |
+            | Android | `Eisenhower-Matrix_*_android-arm64-release.apk`（正式签名） |
 
-            手机安装：下载 APK 后需要允许「未知来源」安装。当前 Android 包使用**调试签名**（可直接安装测试）；配置签名密钥后，同一条工作流会产出正式签名的 APK 与 AAB。
+            手机安装：下载 APK 后需要允许「未知来源」安装。Android 包已使用上传密钥正式签名，同时产出可上传 Google Play 的 AAB。
 
             ## 首次使用
 

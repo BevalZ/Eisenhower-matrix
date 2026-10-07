@@ -170,31 +170,33 @@ Android 包同样完全在 GitHub Actions 上构建，本地不需要 Android SD
 | 未配置签名密钥 | `*-debug.apk` | 调试签名，可直接安装测试 |
 | 已配置签名密钥 | 已签名的 `*.apk` + `*.aab` | 长期分发 / 上架 Google Play |
 
-#### 配置正式签名（可选）
+#### 正式签名（已配置）
 
-在任意装有 JDK 的机器上生成上传密钥：
+本仓库已经在 Actions Secrets 里配置好上传密钥，因此 `Android` 工作流默认就产出**正式签名的 APK 与 AAB**（约 18MB / 7.6MB），可直接分发或上传 Google Play。
+
+- 密钥库：PKCS12，别名 `upload`，由 CI 按文件扩展名自动识别格式（JKS 也支持）
+- 证书 SHA-256 指纹（可公开，用于核对）：`A3:58:FA:49:0A:FC:44:7D:F0:FC:35:50:1C:64:D4:C8:B3:79:11:86:A7:3A:F5:D3:9E:A6:2C:48:8E:91:62:A9`
+- 每次签名后工作流会执行 `apksigner verify --print-certs` 并把指纹打进日志，便于核对
+
+**轮换或重新配置密钥**（也是没有本机 JDK 时的做法）：本机若有 Python + `cryptography`/`pynacl`，可用 `scripts/` 同级的生成脚本一次完成"生成 PKCS12 → 写入 4 个 Secrets → 本地留备份"；或者在有 JDK 的机器上：
 
 ```bash
 keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
-
-# Linux / macOS：导出 base64
-base64 -w0 upload-keystore.jks > keystore.b64
-# Windows PowerShell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("upload-keystore.jks")) | Set-Content keystore.b64
+base64 -w0 upload-keystore.jks > keystore.b64      # Windows: [Convert]::ToBase64String([IO.File]::ReadAllBytes("upload-keystore.jks"))
 ```
 
-在仓库 **Settings → Secrets and variables → Actions** 添加四个 Secret：
+然后在 **Settings → Secrets and variables → Actions** 填这四个（名字不能变）：
 
 | Secret | 内容 |
 |--------|------|
-| `ANDROID_KEY_BASE64` | `keystore.b64` 的全部内容（一行） |
+| `ANDROID_KEY_BASE64` | 密钥库文件内容的 base64（一行） |
 | `ANDROID_KEY_ALIAS` | `upload` |
-| `ANDROID_STORE_PASSWORD` | keystore 口令 |
+| `ANDROID_STORE_PASSWORD` | 密钥库口令 |
 | `ANDROID_KEY_PASSWORD` | 密钥口令（通常与上面相同） |
 
-> keystore 与口令就是你的签名身份：泄露后别人可以签出被系统当作升级包安装的 APK。只放进 Secrets，不要提交进仓库。
-
-> 想先验证签名流程本身（不配真实密钥）？推一个名为 `ci/signing-selftest` 的分支：工作流会用 runner 上生成的一次性密钥走完整的 release + 签名流程，产出 `app-universal-release.apk` / `.aab`；验证完删掉该分支即可。
+> 密钥库与口令就是你的签名身份：泄露后别人可以签出被系统当作升级包安装的 APK，丢失后则无法用同一签名更新已分发的应用。只放进 Secrets 和你的私密备份，不要提交进仓库。
+>
+> 未配置密钥时（例如换到新仓库），工作流会自动退回**调试签名 APK**，不会因为缺少密钥而构建失败；这时也可推 `ci/signing-selftest` 分支，用 runner 上生成的一次性密钥验证整条签名流程。
 
 #### 手机端与桌面端的差异
 
