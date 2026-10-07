@@ -156,8 +156,24 @@ jobs:
         if: steps.flavour.outputs.release == '1'
         run: |
           set -euo pipefail
-          KEYSTORE="$RUNNER_TEMP/upload-keystore.jks"
-          printf '%s' "$ANDROID_KEY_BASE64" | base64 -d > "$KEYSTORE"
+          # 密钥库格式由扩展名决定（apksigner 靠扩展名判类型），所以先探测再改名：
+          # 兼容 keytool 产出的 JKS 与 Android Studio / openssl 常见的 PKCS12。
+          RAW="$RUNNER_TEMP/upload-keystore.bin"
+          printf '%s' "$ANDROID_KEY_BASE64" | base64 -d > "$RAW"
+          if keytool -list -keystore "$RAW" -storepass "$ANDROID_STORE_PASSWORD" -storetype JKS >/dev/null 2>&1; then
+            EXT=jks
+          elif keytool -list -keystore "$RAW" -storepass "$ANDROID_STORE_PASSWORD" -storetype PKCS12 >/dev/null 2>&1; then
+            EXT=p12
+          else
+            echo "::error::无法读取密钥库：口令不对，或格式不是 JKS/PKCS12"
+            exit 1
+          fi
+          KEYSTORE="$RUNNER_TEMP/upload-keystore.$EXT"
+          mv "$RAW" "$KEYSTORE"
+          echo "密钥库类型: $EXT"
+          # 打印条目列表（别名 + 证书指纹，都是公开信息）：万一别名和预期不一致，日志里能直接看到
+          keytool -list -keystore "$KEYSTORE" -storepass "$ANDROID_STORE_PASSWORD" 2>/dev/null || true
+
           BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           echo "using $BUILD_TOOLS"
           sign_args=(--ks "$KEYSTORE" --ks-key-alias "$ANDROID_KEY_ALIAS"
@@ -168,10 +184,13 @@ jobs:
             "$BUILD_TOOLS/apksigner" sign "${sign_args[@]}" --out "$out" "$apk"
             [ "$out" != "$apk" ] && rm -f "$apk" || true
             echo "signed: $out"
+            # 校验签名并打印证书指纹（公钥信息，可公开；方便对照密钥库）
+            "$BUILD_TOOLS/apksigner" verify --print-certs "$out"
           done < <(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" ! -name "*-signed.apk")
           while IFS= read -r aab; do
             jarsigner -keystore "$KEYSTORE" -storepass "$ANDROID_STORE_PASSWORD" \
               -keypass "$ANDROID_KEY_PASSWORD" "$aab" "$ANDROID_KEY_ALIAS"
+            jarsigner -verify "$aab" >/dev/null
             echo "signed: $aab"
           done < <(find src-tauri/gen/android/app/build/outputs/bundle -name "*.aab" 2>/dev/null || true)
           rm -f "$KEYSTORE"
