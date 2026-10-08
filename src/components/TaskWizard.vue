@@ -346,6 +346,7 @@ function submit() {
             :placeholder="PLACEHOLDERS[field]"
             autofocus
             @input="inputError = ''"
+            @focus="scrollBottom"
           />
           <button v-if="step === 'note'" type="button" class="btn btn-ghost" @click="skip">跳过</button>
           <button type="submit" class="btn btn-primary" :disabled="!input.trim()">

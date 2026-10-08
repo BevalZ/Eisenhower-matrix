@@ -433,7 +433,7 @@ async function doRestore() {
             </label>
             <p class="hint">
               勾上以后，AI 服务、接口地址、模型和 API Key 会跟着任务一起同步，新设备不用再填一遍。
-              注意：Key 是**明文**写进 WebDAV 文件里的，用公共网盘时请自行权衡。
+              注意：Key 是<b>明文</b>写进 WebDAV 文件里的，用公共网盘时请自行权衡。
             </p>
             <p v-if="syncMsg" class="sync-msg">{{ syncMsg }}</p>
           </div>

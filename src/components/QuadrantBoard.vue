@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import TaskCard from "./TaskCard.vue";
 import TaskEditDialog from "./TaskEditDialog.vue";
 import type { Task, Quadrant } from "../types";
@@ -50,11 +50,19 @@ const liveMessage = ref("");
 const editing = ref<Task | null>(null);
 
 /** 点击象限空白处 = 新建任务（一律走 AI 向导，象限由 AI 判断，仍可在向导里微调）。 */
+// 触屏上拖拽结束后，浏览器可能补发一次 click；别让它顺手打开「新建任务」向导
+let suppressClickUntil = 0;
+watch(dragging, (now, prev) => {
+  if (prev && !now) suppressClickUntil = Date.now() + 400;
+});
+
 function onBodyClick(e: MouseEvent) {
+  if (Date.now() < suppressClickUntil) return;
   const target = e.target as HTMLElement | null;
   if (!target) return;
-  // 只响应空白区域：象限容器本身，或「拖入任务」占位块；卡片与按钮不触发
-  if (target === e.currentTarget || target.closest(".empty")) emit("new-task");
+  // 卡片或按钮上的点击不触发；其余（空白、占位块、卡片之间的缝隙）都打开新建向导
+  if (target.closest("[data-task-id]") || target.closest("button")) return;
+  emit("new-task");
 }
 
 function closeEditor() {
