@@ -21,60 +21,75 @@ struct AppState {
     sync: Arc<SyncControl>,
 }
 
-#[tauri::command]
-fn get_tasks(state: tauri::State<AppState>) -> Result<Vec<Task>, String> {
-    state.db.get_tasks()
+// SQLite and its mutex may wait for disk/sync. Keep that work off the window thread.
+async fn run_db<T: Send + 'static>(
+    state: tauri::State<'_, AppState>,
+    operation: impl FnOnce(&Db) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let db = Arc::clone(&state.db);
+    tauri::async_runtime::spawn_blocking(move || operation(&db))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn create_task(input: TaskInput, state: tauri::State<AppState>) -> Result<Task, String> {
-    state.db.create_task(&input)
+async fn get_tasks(state: tauri::State<'_, AppState>) -> Result<Vec<Task>, String> {
+    run_db(state, Db::get_tasks).await
 }
 
 #[tauri::command]
-fn toggle_task_done(id: i64, state: tauri::State<AppState>) -> Result<(), String> {
-    state.db.toggle_done(id)
+async fn create_task(input: TaskInput, state: tauri::State<'_, AppState>) -> Result<Task, String> {
+    run_db(state, move |db| db.create_task(&input)).await
 }
 
 #[tauri::command]
-fn delete_task(id: i64, state: tauri::State<AppState>) -> Result<(), String> {
-    state.db.delete_task(id)
+async fn toggle_task_done(id: i64, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    run_db(state, move |db| db.toggle_done(id)).await
 }
 
 #[tauri::command]
-fn update_task(input: TaskUpdate, state: tauri::State<AppState>) -> Result<(), String> {
-    state.db.update_task(&input)
+async fn delete_task(id: i64, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    run_db(state, move |db| db.delete_task(id)).await
 }
 
 #[tauri::command]
-fn reorder_tasks(moves: Vec<TaskMove>, state: tauri::State<AppState>) -> Result<(), String> {
-    state.db.reorder_tasks(&moves)
+async fn update_task(input: TaskUpdate, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    run_db(state, move |db| db.update_task(&input)).await
 }
 
 #[tauri::command]
-fn clear_done_tasks(state: tauri::State<AppState>) -> Result<Vec<i64>, String> {
-    state.db.clear_done()
+async fn reorder_tasks(moves: Vec<TaskMove>, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    run_db(state, move |db| db.reorder_tasks(&moves)).await
 }
 
 #[tauri::command]
-fn restore_tasks(ids: Vec<i64>, state: tauri::State<AppState>) -> Result<usize, String> {
-    state.db.restore_tasks(&ids)
+async fn clear_done_tasks(state: tauri::State<'_, AppState>) -> Result<Vec<i64>, String> {
+    run_db(state, Db::clear_done).await
 }
 
 #[tauri::command]
-fn get_stats(state: tauri::State<AppState>) -> Result<StatsSummary, String> {
-    state.db.get_stats()
+async fn restore_tasks(ids: Vec<i64>, state: tauri::State<'_, AppState>) -> Result<usize, String> {
+    run_db(state, move |db| db.restore_tasks(&ids)).await
+}
+
+#[tauri::command]
+async fn get_stats(state: tauri::State<'_, AppState>) -> Result<StatsSummary, String> {
+    run_db(state, Db::get_stats).await
 }
 
 // ---- Settings ----
 
 #[tauri::command]
-fn get_settings(state: tauri::State<AppState>) -> Result<Settings, String> {
-    let theme = state.db.get_setting("theme")?.unwrap_or_else(|| "light".into());
-    let webdav_url = state.db.get_setting("webdav_url")?;
-    let ai = ai_settings(&state.db)?;
-    let jevai_key = secrets::is_set(&state.db, secrets::API_KEY)?;
-    let openai_key = secrets::is_set(&state.db, secrets::OPENAI_API_KEY)?;
+async fn get_settings(state: tauri::State<'_, AppState>) -> Result<Settings, String> {
+    run_db(state, read_settings).await
+}
+
+fn read_settings(db: &Db) -> Result<Settings, String> {
+    let theme = db.get_setting("theme")?.unwrap_or_else(|| "light".into());
+    let webdav_url = db.get_setting("webdav_url")?;
+    let ai = ai_settings(db)?;
+    let jevai_key = secrets::is_set(db, secrets::API_KEY)?;
+    let openai_key = secrets::is_set(db, secrets::OPENAI_API_KEY)?;
     Ok(Settings {
         api_key_configured: if ai.0 == "openai" { !ai.1.is_empty() && !ai.2.is_empty() } else { jevai_key },
         theme,
@@ -84,8 +99,8 @@ fn get_settings(state: tauri::State<AppState>) -> Result<Settings, String> {
         ai_model: ai.2,
         jevai_key_configured: jevai_key,
         openai_key_configured: openai_key,
-        secrets_stored_in_plaintext: secrets::stored_in_plaintext(&state.db)?,
-        sync_ai_key: state.db.sync_ai_key_enabled()?,
+        secrets_stored_in_plaintext: secrets::stored_in_plaintext(db)?,
+        sync_ai_key: db.sync_ai_key_enabled()?,
     })
 }
 
@@ -268,8 +283,8 @@ fn restore_from_ball(app: tauri::AppHandle) -> Result<(), String> {
 // ---- Import / Export ----
 
 #[tauri::command]
-fn export_data(state: tauri::State<AppState>) -> Result<String, String> {
-    state.db.export_all()
+async fn export_data(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    run_db(state, Db::export_all).await
 }
 
 /// Save a JSON backup through the native save dialog. Blob downloads are not reliable in
@@ -305,8 +320,8 @@ fn save_backup(app: tauri::AppHandle, name: String, json: String) -> Result<Opti
 }
 
 #[tauri::command]
-fn import_data(json: String, state: tauri::State<AppState>) -> Result<usize, String> {
-    state.db.import_all(&json)
+async fn import_data(json: String, state: tauri::State<'_, AppState>) -> Result<usize, String> {
+    run_db(state, move |db| db.import_all(&json)).await
 }
 
 // ---- WebDAV Sync ----

@@ -8,12 +8,19 @@ import {
   compareTasks,
   edgeScrollSpeed,
   indexFromPointer,
+  lowerBound,
   naturalIndex,
   pickQuadrant,
   planDrop,
   touchIntent,
   type TaskMove,
 } from "./ordering";
+
+it("finds a drop slot in 10,000 cards with at most 14 geometry reads", () => {
+  let reads = 0;
+  expect(lowerBound(10_000, (i) => { reads++; return i >= 6789; })).toBe(6789);
+  expect(reads).toBeLessThanOrEqual(14);
+});
 
 function mk(id: number, priority: number, done = false, quadrant: Quadrant = 1): Task {
   return {

@@ -17,8 +17,8 @@ function loadSeen(): Set<string> {
 
 function saveSeen(seen: Set<string>) {
   try {
-    // Keep the list bounded; old entries only matter for tasks still on the board.
-    localStorage.setItem(STORE_KEY, JSON.stringify([...seen].slice(-500)));
+    // check() prunes deleted/completed tasks and old deadlines before persisting.
+    localStorage.setItem(STORE_KEY, JSON.stringify([...seen]));
   } catch {
     /* storage unavailable */
   }
@@ -28,17 +28,21 @@ function saveSeen(seen: Set<string>) {
  * A clock that ticks every minute, plus one in-app reminder per task when its
  * deadline comes within 48 hours and again when it passes.
  */
-export function useDueReminders(tasks: Ref<Task[]>, move: (task: Task, q: Quadrant) => void) {
+export function useDueReminders(tasks: Ref<Task[]>, move: (task: Task, q: Quadrant) => void, ready: Ref<boolean>) {
   const now = ref(Date.now());
   const { show } = useToast();
   const seen = loadSeen();
   let timer: ReturnType<typeof setInterval> | undefined;
 
   function check() {
+    if (document.hidden || !ready.value) return;
     now.value = Date.now();
     let changed = false;
+    const activeKeys = new Set<string>();
     for (const task of tasks.value) {
       if (task.done || task.due_at == null) continue;
+      activeKeys.add(`${task.id}:${task.due_at}:soon`);
+      activeKeys.add(`${task.id}:${task.due_at}:overdue`);
       const state = dueState(task.due_at, now.value);
       if (state === "later") continue;
       const key = `${task.id}:${task.due_at}:${state}`;
@@ -52,16 +56,30 @@ export function useDueReminders(tasks: Ref<Task[]>, move: (task: Task, q: Quadra
         action: target ? { label: `移到${QUADRANT_META[target].name}`, run: () => move(task, target) } : undefined,
       });
     }
+    for (const key of seen) {
+      if (!activeKeys.has(key)) { seen.delete(key); changed = true; }
+    }
     if (changed) saveSeen(seen);
   }
 
+  function updateTimer() {
+    clearInterval(timer);
+    if (!document.hidden) {
+      check();
+      timer = setInterval(check, 60_000);
+    }
+  }
+
   onMounted(() => {
-    check();
-    timer = setInterval(check, 60_000);
+    updateTimer();
+    document.addEventListener("visibilitychange", updateTimer);
   });
-  onBeforeUnmount(() => clearInterval(timer));
+  onBeforeUnmount(() => {
+    clearInterval(timer);
+    document.removeEventListener("visibilitychange", updateTimer);
+  });
   // New or edited deadlines are checked right away, not on the next tick.
-  watch(() => tasks.value.map((t) => `${t.id}:${t.due_at}:${t.done}`).join(), check);
+  watch(() => [ready.value, tasks.value.map((t) => `${t.id}:${t.due_at}:${t.done}`).join()], check);
 
   return { now };
 }

@@ -33,7 +33,8 @@ export function compareTasks(a: Task, b: Task): number {
  * `list` is the quadrant in board order without the dragged task.
  */
 export function clampIndex(list: Task[], done: boolean, index: number): number {
-  const undone = list.filter((t) => !t.done).length;
+  // Board order guarantees all unfinished cards precede completed cards.
+  const undone = lowerBound(list.length, (i) => list[i].done);
   const [min, max] = done ? [undone, list.length] : [0, undone];
   return Math.min(max, Math.max(min, index));
 }
@@ -46,9 +47,19 @@ export function naturalIndex(list: Task[], task: Task): number {
 
 /** Drop slot for pointer `y`, given the vertical midpoints of the cards in DOM order. */
 export function indexFromPointer(y: number, midpoints: number[]): number {
-  let i = 0;
-  while (i < midpoints.length && y > midpoints[i]) i++;
-  return i;
+  return lowerBound(midpoints.length, (i) => y <= midpoints[i]);
+}
+
+/** First matching item in a sorted sequence; the accessor can read DOM geometry lazily. */
+export function lowerBound(length: number, matches: (index: number) => boolean): number {
+  let low = 0;
+  let high = length;
+  while (low < high) {
+    const mid = low + Math.floor((high - low) / 2);
+    if (matches(mid)) high = mid;
+    else low = mid + 1;
+  }
+  return low;
 }
 
 /** How long a finger must rest on a card before it starts dragging instead of scrolling. */

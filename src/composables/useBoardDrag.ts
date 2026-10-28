@@ -1,10 +1,10 @@
-import { nextTick, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import type { Quadrant, Task } from "../types";
 import {
   TOUCH_HOLD_MS,
   clampIndex,
   edgeScrollSpeed,
-  indexFromPointer,
+  lowerBound,
   pickQuadrant,
   planDrop,
   touchIntent,
@@ -44,6 +44,14 @@ export function useBoardDrag(opts: Options) {
 
   const zones = new Map<Quadrant, HTMLElement>();
   const bodies = new Map<Quadrant, HTMLElement>();
+  // Stable during a drag: do not allocate a filtered task list on every pointer frame.
+  const dropLists = computed(() => {
+    const id = dragging.value?.id;
+    return Object.fromEntries(([1, 2, 3, 4] as Quadrant[]).map((q) =>
+      [q, id == null ? opts.list(q) : opts.list(q).filter((task) => task.id !== id)],
+    )) as Record<Quadrant, Task[]>;
+  });
+  const cardNodes = new Map<Quadrant, NodeListOf<HTMLElement>>();
 
   let pointerId = -1;
   let pointerType = "mouse";
@@ -182,8 +190,8 @@ export function useBoardDrag(opts: Options) {
   function frame() {
     raf = 0;
     if (!dragging.value || settling.value) return;
-    placeGhost();
     const q = track();
+    placeGhost();
     if (q !== null && autoScroll(q)) schedule();
   }
 
@@ -210,14 +218,18 @@ export function useBoardDrag(opts: Options) {
   }
 
   function slotIndex(q: Quadrant, task: Task): number {
-    const list = opts.list(q).filter((t) => t.id !== task.id);
+    const list = dropLists.value[q];
     const body = bodies.get(q);
     if (!body) return clampIndex(list, task.done, list.length);
     // offsetTop ignores the FLIP transforms of cards that are still animating.
     const top = body.getBoundingClientRect().top + body.clientTop - body.scrollTop;
-    const cards = body.querySelectorAll<HTMLElement>("[data-task-id]");
-    const mids = Array.from(cards, (c) => top + c.offsetTop + c.offsetHeight / 2);
-    return clampIndex(list, task.done, indexFromPointer(y, mids));
+    let cards = cardNodes.get(q);
+    if (!cards) {
+      cards = body.querySelectorAll<HTMLElement>("[data-task-id]");
+      cardNodes.set(q, cards);
+    }
+    const index = lowerBound(cards.length, (i) => y <= top + cards![i].offsetTop + cards![i].offsetHeight / 2);
+    return clampIndex(list, task.done, index);
   }
 
   function autoScroll(q: Quadrant): boolean {
@@ -312,6 +324,7 @@ export function useBoardDrag(opts: Options) {
       /* already released */
     }
     dragging.value = null;
+    cardNodes.clear();
     slot.value = null;
     origin = null;
     pending = null;
@@ -362,6 +375,9 @@ export function useBoardDrag(opts: Options) {
   watch(ghostEl, (el) => {
     if (el) placeGhost();
   }, { flush: "post" });
+
+  // DOM order changes only after a list/slot update, not after every pointer movement.
+  watch([dropLists, slot], () => cardNodes.clear(), { flush: "post" });
 
   onBeforeUnmount(() => {
     if (dragging.value) finish(Promise.resolve());

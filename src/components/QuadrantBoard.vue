@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, defineAsyncComponent, nextTick, ref, watch } from "vue";
 import TaskCard from "./TaskCard.vue";
-import TaskEditDialog from "./TaskEditDialog.vue";
+const TaskEditDialog = defineAsyncComponent(() => import("./TaskEditDialog.vue"));
 import type { Task, Quadrant } from "../types";
 import { QUADRANT_META } from "../types";
 import { useTasks } from "../composables/useTasks";
@@ -11,7 +11,7 @@ import { clampIndex, naturalIndex, planDrop, type TaskMove } from "../ordering";
 
 const emit = defineEmits<{ "new-task": [] }>();
 
-const { tasks, toggleTaskDone, deleteTask, reorderTasks, holdRemoteRefresh, tasksByQuadrant } = useTasks();
+const { tasks, tasksLoaded, toggleTaskDone, deleteTask, reorderTasks, holdRemoteRefresh, tasksByQuadrant } = useTasks();
 
 const quadrants: Quadrant[] = [1, 2, 3, 4];
 const layout: Record<Quadrant, { row: number; col: number }> = {
@@ -93,7 +93,7 @@ function moveToQuadrant(task: Task, q: Quadrant) {
 const { now } = useDueReminders(tasks, (task, q) => {
   const current = tasks.value.find((t) => t.id === task.id);
   if (current) moveToQuadrant(current, q);
-});
+}, tasksLoaded);
 
 function nudge(task: Task, delta: -1 | 1) {
   const full = tasksByQuadrant(task.quadrant);
@@ -155,7 +155,7 @@ function nudge(task: Task, delta: -1 | 1) {
                   @pointer-down="onPointerDown"
                   @move-to="moveToQuadrant"
                   @nudge="nudge"
-                  :now="now"
+                  :now="row.task.due_at == null ? undefined : now"
                   @edit="editing = $event"
                 />
 
@@ -231,9 +231,10 @@ function nudge(task: Task, delta: -1 | 1) {
 .axis-x { margin-top: 8px; }
 .grid {
   flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   gap: 12px;
   padding-left: 16px;
 }
@@ -255,6 +256,7 @@ function nudge(task: Task, delta: -1 | 1) {
 }
 .q-header {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;

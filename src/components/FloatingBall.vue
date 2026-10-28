@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onBeforeUnmount, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -47,6 +47,8 @@ function endPress() {
 function restore() {
   invoke("restore_from_ball");
 }
+
+onBeforeUnmount(endPress);
 
 // Enter / Space; mouse clicks (detail > 0) are handled on mouseup.
 function onClick(e: MouseEvent) {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from "vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { ref, onMounted, computed } from "vue";
+import { useAppEvent } from "../composables/useAppEvent";
+import { createRefreshQueue } from "../refreshQueue";
 import { useTasks } from "../composables/useTasks";
 import { QUADRANT_META, type StatsSummary, type Quadrant } from "../types";
 
@@ -8,13 +9,13 @@ const { getStats } = useTasks();
 const stats = ref<StatsSummary | null>(null);
 const loading = ref(true);
 const error = ref("");
-let unlisten: UnlistenFn | undefined;
+const refresh = createRefreshQueue(getStats, (value) => { stats.value = value; });
 
 async function refreshStats(quiet = false) {
   if (!quiet) loading.value = true;
   error.value = "";
   try {
-    stats.value = await getStats();
+    await refresh.request();
   } catch (e) {
     if (!quiet || !stats.value) {
       error.value = e instanceof Error ? e.message : String(e);
@@ -24,16 +25,8 @@ async function refreshStats(quiet = false) {
   }
 }
 
-onMounted(async () => {
-  unlisten = await listen("tasks-changed", () => {
-    void refreshStats(true);
-  });
-  await refreshStats();
-});
-
-onUnmounted(() => {
-  unlisten?.();
-});
+useAppEvent("tasks-changed", () => { void refreshStats(true); });
+onMounted(() => { void refreshStats(); });
 
 const quadrants: Quadrant[] = [1, 2, 3, 4];
 // Bars scale to the busiest day instead of capping at 4 tasks.

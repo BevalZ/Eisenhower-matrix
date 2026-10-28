@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run --dir src",
+    "perf": "vitest run src/performance.test.ts",
+    "perf:bundle": "npm run build && node scripts/check-bundle.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -147,6 +147,8 @@ npm run tauri build
 
 构建产物位于 `src-tauri/target/release/bundle/`。
 
+性能回归：`npm run perf` 检查批量排序、刷新和拖拽的操作数量；`npm run perf:bundle` 构建并检查两个窗口的初始资源预算。机制、测量结果及浏览器验证命令见 [性能报告](docs/performance.md)。
+
 ### 不在本地构建：用 GitHub Actions 出测试包
 
 推送到 `main` 以外的任意分支，`Test Build` 工作流会先跑类型检查和单元测试，再打出 Windows 安装版和便携版，放在该次运行页面底部的 **Artifacts** 里（保留 14 天）。需要 macOS / Linux 包时，在 Actions 页面手动运行 `Test Build` 并勾选 “Also build macOS and Linux”。正式发布仍然是推送 `v*` tag 触发 `Release`。

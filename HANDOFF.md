@@ -13,7 +13,7 @@
 
 桌面端（Windows/macOS/Linux）与 **Android 端**功能齐备，代码在 `main`；所有安装包与 APK 都由 **GitHub Actions 远程构建**，本机不需要也不应该打包。Android **已配置正式签名**（上传密钥在仓库 Secrets 里），每次构建产出签名 APK + AAB。
 
-- 版本：`3.4.2`（`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 三处必须一起改，改完打 tag 发布）
+- 版本：工作区 `3.4.3`（三处版本已一致；本轮未发布）。2026-10-25 已落实性能机制及回归预算，详见 [性能报告](docs/performance.md)。
 - 最新发布：[Release v3.4.2](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.2)（详见第 8 轮）
 - 上一个发布：[Release v3.4.0](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.0)（`03d4083`，Android 资产已替换为签名版）
 - Android 签名：密钥库备份在 `D:\Github_repos\Hydens\android-signing\`（PKCS12 + 口令说明 + 生成脚本），证书 SHA-256 `A3:58:FA:49:…:62:A9`；**这份备份需要你自己再存一份**，丢了无法用同一签名更新已分发的应用
@@ -46,6 +46,7 @@
 |---|---|
 | Node | **不在 PATH**。用自带：`C:\Users\zhaoh\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe` |
 | Rust | `rustc 1.88`，但项目锁定的 `tauri 2.12` / `tauri-build 2.7` 要求 **1.90** → 直接 `cargo build/test` 会报 `rustc 1.88.0 is not supported`。本地验证加 `--ignore-rust-version`；**正式构建交给 CI**（CI 用 stable，已是 1.9x） |
+| 本轮环境复核 | Node 26.1.0 已在 PATH；MSVC `link.exe` 缺失，`--ignore-rust-version` 仍无法运行 Rust 测试。源码及测试的 metadata 类型检查通过，完整执行需补工具链或 CI，不能沿用旧轮次的本机通过结论。 |
 | Java / Android SDK / NDK | **没有**。`keytool`、`sdkmanager`、`adb` 都不可用 → 不能在本地生成 keystore 或打 APK |
 | `gh` CLI | **未安装** → 用 `scripts/ci.py`（见第 4 节） |
 | GitHub 凭据 | 存在 Git Credential Manager：`git credential fill` 可取（用户 `BevalZ`）。该凭据可读写 repo，也**能读写 Actions Secrets** |
@@ -116,6 +117,8 @@ python scripts/ci.py log <job_id> "错误|error"     # 过滤日志
 - `useTasks().tasksByQuadrant(q)` 返回的是**内部数组**（只读，别原地改）；象限分组只在数据变化时算一次，别再在模板里反复 filter。
 - 触屏：卡片是 `touch-action: none`，所以列表滚动由 `useBoardDrag` 手工实现；判断逻辑在 `ordering.ts::touchIntent`（有单测），改阈值先改那里。
 - 乐观更新要成对写：先改本地、失败回滚（`useTasks` 里已有模式，新增写操作请照抄）。
+- `useTasks` 不再隐式注册事件；主窗口与统计页用 `useAppEvent` 管理生命周期。任务写入经过队列保持顺序，拖拽/写入用刷新 hold 防止旧快照覆盖。
+- 看板 `.grid` 的 `min-height: 0` 和 `minmax(0, 1fr)` 必须保留，否则长列表会把网格撑到数万像素高，象限内滚动失效。拖拽节点缓存只缓存节点，DOM 更新后失效。
 
 ### 后端 `src-tauri/src/`
 
@@ -170,10 +173,19 @@ python scripts/ci.py watch main android.yml
 8. **P3 · 窄屏只调了手机竖屏**：平板/横屏未验证。
 9. **P3 · `restore_from_webdav` 是整库覆盖并重排 id**（设计如此，UI 有二次确认）。
 10. **P3 · `sync_all_peers` 串行同步**：设备多时较慢，但顺序同步避免了 SQLite 锁竞争，暂不改。
+11. **本轮性能验证待补**：完整 Rust 测试执行、Android 真机及原生进程内存测量。前端 61 项测试、构建、资源预算和 Edge 生产界面验证已通过；数万活跃任务的虚拟列表与增量同步仍未实现，见 `docs/performance.md`。
 
 ---
 
 ## 8. 变更日志（新的一轮追加在最上面）
+
+### 第 9 轮 · 2026-10-25 · 性能机制与回归预算（工作区，未提交）
+
+- 基线 `b373c96`。增加刷新合并/过期快照丢弃、任务对象复用、批量移动 ID 索引、写入队列、拖拽二分几何读取与节点缓存；修复大列表网格高度约束。
+- 分离悬浮球入口，弹窗/统计按需加载；异步监听可靠释放，隐藏窗口延后刷新并停止提醒时钟，提醒缓存按当前任务清理。
+- SQLite 批量语句复用、同步只读取冲突元数据、分批释放锁、导出序列化移出锁；任务/统计/设置读取及导入导出移到工作线程；添加活跃排序索引。
+- 增加 `npm run perf`、`npm run perf:bundle` 和 CI 资源预算，浏览器夹具在 `scripts/performance/`；测量细节和范围见 [性能报告](docs/performance.md)。
+- 验证：61 项前端测试、类型检查、生产构建和预算通过；Edge 1000 卡片的刷新、切页、拖拽、键盘、编辑通过；悬浮球 100 事件任务读取由 100 降到 0，Android UA 旧窗口标签回退通过。Rust 全部源码和测试 metadata 类型检查通过，完整测试因缺 MSVC 链接器未执行。未发布、未修改真实任务数据。
 
 ### 第 8 轮 · 2026-10-07 · 真机反馈四项修复（版本 3.4.2）
 

@@ -122,8 +122,10 @@ impl Db {
     // ---- Backup / Restore ----
 
     pub fn export_all(&self) -> Result<String, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let tasks = backup_tasks(&conn, false)?;
+        let tasks = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            backup_tasks(&conn, false)?
+        };
         let backup = BackupData {
             version: 2,
             exported_at: Utc::now().timestamp_millis(),
@@ -199,6 +201,12 @@ impl Db {
         let device = device_id_locked(&tx)?;
         let now = Utc::now().timestamp_millis();
         tx.execute("DELETE FROM tasks", params![]).map_err(|e| e.to_string())?;
+        let mut insert = tx.prepare_cached(
+            "INSERT INTO tasks (id, title, description, quadrant, priority,
+             importance_score, urgency_score, done, created_at, completed_at,
+             uid, updated_at, updated_by, deleted_at, due_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"
+        ).map_err(|e| e.to_string())?;
         for t in &backup.tasks {
             let uid = if t.uid.trim().is_empty() {
                 uuid::Uuid::new_v4().to_string()
@@ -207,11 +215,7 @@ impl Db {
             };
             let updated_at = if t.updated_at > 0 { t.updated_at } else { now };
             let updated_by = if t.updated_by.trim().is_empty() { device.clone() } else { t.updated_by.clone() };
-            tx.execute(
-                "INSERT INTO tasks (id, title, description, quadrant, priority,
-                 importance_score, urgency_score, done, created_at, completed_at,
-                 uid, updated_at, updated_by, deleted_at, due_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            insert.execute(
                 params![
                     t.id, t.title, t.description, t.quadrant, t.priority,
                     t.importance_score, t.urgency_score, t.done as i64,
@@ -223,6 +227,7 @@ impl Db {
             .map_err(|e| e.to_string())?;
         }
         let count = backup.tasks.len();
+        drop(insert);
         tx.commit().map_err(|e| e.to_string())?;
         Ok(count)
     }
@@ -405,13 +410,15 @@ impl Db {
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let now = Utc::now().timestamp_millis();
         let device = device_id_locked(&tx)?;
+        let mut update = tx.prepare_cached(
+            "UPDATE tasks
+             SET quadrant = ?1, priority = ?2,
+                 updated_at = max(updated_at + 1, ?3), updated_by = ?4
+             WHERE id = ?5 AND deleted_at IS NULL"
+        ).map_err(|e| e.to_string())?;
         for m in moves {
-            let changed = tx
+            let changed = update
                 .execute(
-                    "UPDATE tasks
-                     SET quadrant = ?1, priority = ?2,
-                         updated_at = max(updated_at + 1, ?3), updated_by = ?4
-                     WHERE id = ?5 AND deleted_at IS NULL",
                     params![m.quadrant, m.priority, now, device, m.id],
                 )
                 .map_err(|e| e.to_string())?;
@@ -419,6 +426,7 @@ impl Db {
                 return Err("任务不存在或已被删除，请刷新后重试".into());
             }
         }
+        drop(update);
         tx.commit().map_err(|e| e.to_string())
     }
 
@@ -463,18 +471,21 @@ impl Db {
         let now = Utc::now().timestamp_millis();
         let device = device_id_locked(&tx)?;
         let mut restored = 0usize;
+        let mut update = tx.prepare_cached(
+            "UPDATE tasks
+             SET deleted_at = NULL,
+                 updated_at = max(updated_at + 1, ?1),
+                 updated_by = ?2
+             WHERE id = ?3 AND deleted_at IS NOT NULL"
+        ).map_err(|e| e.to_string())?;
         for &id in ids {
-            restored += tx
+            restored += update
                 .execute(
-                    "UPDATE tasks
-                     SET deleted_at = NULL,
-                         updated_at = max(updated_at + 1, ?1),
-                         updated_by = ?2
-                     WHERE id = ?3 AND deleted_at IS NOT NULL",
                     params![now, device, id],
                 )
                 .map_err(|e| e.to_string())?;
         }
+        drop(update);
         tx.commit().map_err(|e| e.to_string())?;
         Ok(restored)
     }
@@ -811,31 +822,32 @@ impl Db {
             validate_sync_task(task)?;
         }
         let incoming = newest_by_uid(incoming);
-        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut applied = 0usize;
         for chunk in incoming.chunks(MERGE_CHUNK) {
+            // Release the mutex between transactions so foreground task commands can run.
+            let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
             let tx = conn.transaction().map_err(|e| e.to_string())?;
             for &remote in chunk {
                 let local = tx
+                    .prepare_cached("SELECT updated_at, updated_by FROM tasks WHERE uid = ?1")
+                    .map_err(|e| e.to_string())?
                     .query_row(
-                        "SELECT uid, title, description, quadrant, priority,
-                                importance_score, urgency_score, done, created_at, completed_at,
-                                updated_at, updated_by, deleted_at, due_at
-                         FROM tasks WHERE uid = ?1",
                         params![remote.uid],
-                        read_sync_task,
+                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
                     )
                     .optional()
                     .map_err(|e| e.to_string())?;
-                if local.as_ref().is_some_and(|item| !remote_wins(item, remote)) {
+                if local.as_ref().is_some_and(|(at, by)|
+                    (remote.updated_at, remote.updated_by.as_str()) <= (*at, by.as_str())) {
                     continue;
                 }
                 if local.is_none() {
-                    tx.execute(
+                    tx.prepare_cached(
                         "INSERT INTO tasks
                             (title, description, quadrant, priority, importance_score, urgency_score,
                              done, created_at, completed_at, uid, updated_at, updated_by, deleted_at, due_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"
+                    ).map_err(|e| e.to_string())?.execute(
                         params![
                             remote.title, remote.description, remote.quadrant, remote.priority,
                             remote.importance_score, remote.urgency_score, remote.done as i64,
@@ -845,14 +857,15 @@ impl Db {
                     )
                     .map_err(|e| e.to_string())?;
                 } else {
-                    tx.execute(
+                    tx.prepare_cached(
                         "UPDATE tasks
                          SET title = ?1, description = ?2, quadrant = ?3, priority = ?4,
                              importance_score = ?5, urgency_score = ?6, done = ?7,
                              created_at = ?8, completed_at = ?9, updated_at = ?10,
                              updated_by = ?11, deleted_at = ?12,
                              due_at = CASE WHEN ?14 THEN due_at ELSE ?15 END
-                         WHERE uid = ?13",
+                         WHERE uid = ?13"
+                    ).map_err(|e| e.to_string())?.execute(
                         params![
                             remote.title, remote.description, remote.quadrant, remote.priority,
                             remote.importance_score, remote.urgency_score, remote.done as i64,
@@ -929,6 +942,12 @@ fn ensure_sync_columns(conn: &Connection) -> Result<(), String> {
         [],
     )
     .map_err(|e| e.to_string())?;
+    // Match the board query without sorting all active rows or scanning retained history.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_active_order
+         ON tasks(done ASC, priority DESC, id ASC) WHERE deleted_at IS NULL",
+        [],
+    ).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1358,6 +1377,40 @@ mod tests {
         let b = db.create_task(&input("b", 1, 50.0)).unwrap();
         let ids: Vec<i64> = db.get_tasks().unwrap().iter().map(|t| t.id).collect();
         assert_eq!(ids, vec![a.id, b.id]);
+    }
+
+    #[test]
+    fn board_query_uses_active_index_without_temporary_sort() {
+        let db = Db::open_in_memory().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "EXPLAIN QUERY PLAN SELECT id, title, description, quadrant, priority,
+             importance_score, urgency_score, done, created_at, completed_at, due_at
+             FROM tasks WHERE deleted_at IS NULL ORDER BY done ASC, priority DESC, id ASC"
+        ).unwrap();
+        let plan: Vec<String> = stmt.query_map([], |r| r.get(3)).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert!(plan.iter().any(|line| line.contains("idx_tasks_active_order")), "{plan:?}");
+        assert!(!plan.iter().any(|line| line.contains("TEMP B-TREE")), "{plan:?}");
+    }
+
+    #[test]
+    fn cached_merge_preserves_timestamp_tiebreaks_and_skips_unchanged_rows() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_task(&input("original", 1, 50.0)).unwrap();
+        let mut remote = db.sync_snapshot().unwrap();
+        remote[0].updated_at += 10;
+        remote[0].updated_by = "device-b".into();
+        remote[0].title = "newer".into();
+        assert_eq!(db.merge_remote(&remote, SYNC_SCHEMA).unwrap(), 1);
+        assert_eq!(db.merge_remote(&remote, SYNC_SCHEMA).unwrap(), 0);
+        remote[0].updated_by = "device-a".into();
+        remote[0].title = "loser".into();
+        assert_eq!(db.merge_remote(&remote, SYNC_SCHEMA).unwrap(), 0);
+        remote[0].updated_by = "device-c".into();
+        remote[0].title = "winner".into();
+        assert_eq!(db.merge_remote(&remote, SYNC_SCHEMA).unwrap(), 1);
+        assert_eq!(db.get_tasks().unwrap()[0].title, "winner");
     }
 
     #[test]

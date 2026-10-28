@@ -1,19 +1,29 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed, defineAsyncComponent } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import QuadrantBoard from "./components/QuadrantBoard.vue";
-import TaskWizard from "./components/TaskWizard.vue";
-import StatsPanel from "./components/StatsPanel.vue";
-import SettingsDialog from "./components/SettingsDialog.vue";
-import FloatingBall from "./components/FloatingBall.vue";
+const TaskWizard = defineAsyncComponent(() => import("./components/TaskWizard.vue"));
+const StatsPanel = defineAsyncComponent(() => import("./components/StatsPanel.vue"));
+const SettingsDialog = defineAsyncComponent(() => import("./components/SettingsDialog.vue"));
 import ToastHost from "./components/ToastHost.vue";
 import { useTasks } from "./composables/useTasks";
 import { useToast } from "./composables/useToast";
 import { usePlatform } from "./composables/usePlatform";
+import { useAppEvent } from "./composables/useAppEvent";
 
 const { tasks, loadTasks, loadSettings, clearDone, loading, applyTheme, settings } = useTasks();
 const { showError } = useToast();
+let remoteRefreshPending = false;
+function refreshRemoteTasks() {
+  remoteRefreshPending = true;
+  if (document.hidden) return;
+  remoteRefreshPending = false;
+  void loadTasks({ quiet: true }).catch((err) => showError("读取任务失败", err));
+}
+function onVisibilityChange() {
+  if (!document.hidden && remoteRefreshPending) refreshRemoteTasks();
+}
+useAppEvent("tasks-changed", refreshRemoteTasks);
 // The floating ball is a desktop window arrangement; phones have no second window.
 const { isMobile } = usePlatform();
 
@@ -29,7 +39,7 @@ function openSettingsFromWizard() {
 }
 
 function onGlobalKeyDown(e: KeyboardEvent) {
-  if (isBallWindow.value || e.isComposing) return;
+  if (e.isComposing) return;
   if (e.key === "Escape" && (showWizard.value || showSettings.value)) {
     e.preventDefault();
     showWizard.value = false;
@@ -40,12 +50,10 @@ function onGlobalKeyDown(e: KeyboardEvent) {
   }
 }
 
-onUnmounted(() => window.removeEventListener("keydown", onGlobalKeyDown));
-
-const windowLabel = getCurrentWindow().label;
-// 手机端没有悬浮球窗口；用 UA 同步判断（而不是等 platform 命令返回），避免首帧先闪一下球界面
-const isTouchDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-const isBallWindow = computed(() => !isTouchDevice && windowLabel === "floating-ball");
+onUnmounted(() => {
+  window.removeEventListener("keydown", onGlobalKeyDown);
+  document.removeEventListener("visibilitychange", onVisibilityChange);
+});
 
 async function minimizeToBall() {
   try {
@@ -56,14 +64,8 @@ async function minimizeToBall() {
 }
 
 onMounted(async () => {
-  if (isBallWindow.value) {
-    // Only the ball itself may paint; #app carries the page gradient from style.css.
-    for (const el of [document.documentElement, document.body, document.getElementById("app")]) {
-      if (el) el.style.background = "transparent";
-    }
-    return;
-  }
   window.addEventListener("keydown", onGlobalKeyDown);
+  document.addEventListener("visibilitychange", onVisibilityChange);
   // Both loads are independent: one failing still applies the theme and reports its own reason.
   const [tasksResult, settingsResult] = await Promise.allSettled([loadTasks(), loadSettings()]);
   if (settingsResult.status === "fulfilled") applyTheme(settings.value.theme || "light");
@@ -73,11 +75,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <!-- Floating ball window -->
-  <FloatingBall v-if="isBallWindow" />
-
   <!-- Main window -->
-  <div v-else class="app">
+  <div class="app">
     <!-- Title bar -->
     <header class="titlebar">
       <div class="brand">

@@ -1,6 +1,7 @@
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { createRefreshQueue } from "../refreshQueue";
+import { reconcileTasks } from "../taskSnapshot";
 import {
   isUnscored,
   quadrantFromScores,
@@ -26,16 +27,40 @@ interface QuadrantCorrection {
 }
 
 const tasks = ref<Task[]>([]);
-const loading = ref(false);
+const loading = ref(true);
+const tasksLoaded = ref(false);
 const settings = ref<Settings>({ api_key_configured: false, theme: "light", webdav_configured: false });
+const taskIndex = computed(() => new Map(tasks.value.map((task) => [task.id, task])));
+const refresh = createRefreshQueue(
+  () => invoke<Task[]>("get_tasks"),
+  (incoming) => {
+    tasks.value = reconcileTasks(tasks.value, incoming);
+    tasksLoaded.value = true;
+  },
+);
+let loadingRequests = 0;
 
 async function loadTasks(options?: { quiet?: boolean }) {
   const quiet = options?.quiet ?? false;
-  if (!quiet) loading.value = true;
+  if (!quiet) { loadingRequests++; loading.value = true; }
   try {
-    tasks.value = await invoke<Task[]>("get_tasks");
+    await refresh.request();
   } finally {
-    if (!quiet) loading.value = false;
+    if (!quiet) loading.value = --loadingRequests > 0;
+  }
+}
+
+// Reads started before a write must not overwrite its optimistic update.
+let pendingWrite: Promise<unknown> = Promise.resolve();
+async function writeTasks<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const release = refresh.pause();
+  // Native commands run on worker threads; preserve the user's write order.
+  const result = pendingWrite.then(() => invoke<T>(command, args));
+  pendingWrite = result.catch(() => {});
+  try {
+    return await result;
+  } finally {
+    release();
   }
 }
 
@@ -64,21 +89,21 @@ async function classifyTask(description: string): Promise<ClassificationResult> 
 }
 
 async function createTask(input: TaskInput): Promise<Task> {
-  const task = await invoke<Task>("create_task", { input });
+  const task = await writeTasks<Task>("create_task", { input });
   // Optimistic: append locally without full reload
   tasks.value = [...tasks.value, task];
   return task;
 }
 
 async function toggleTaskDone(id: number) {
-  const task = tasks.value.find((t) => t.id === id);
+  const task = taskIndex.value.get(id);
   if (!task) return;
   const prevDone = task.done;
   const prevCompleted = task.completed_at;
   task.done = !task.done;
   task.completed_at = task.done ? Date.now() : null;
   try {
-    await invoke("toggle_task_done", { id });
+    await writeTasks("toggle_task_done", { id });
   } catch (err) {
     task.done = prevDone;
     task.completed_at = prevCompleted;
@@ -96,7 +121,7 @@ async function deleteTask(id: number) {
   if (idx < 0) return;
   const [removed] = tasks.value.splice(idx, 1);
   try {
-    await invoke("delete_task", { id });
+    await writeTasks("delete_task", { id });
   } catch (err) {
     tasks.value.splice(Math.min(idx, tasks.value.length), 0, removed);
     toast.showError("删除失败", err);
@@ -109,7 +134,7 @@ async function deleteTask(id: number) {
 
 async function restoreTasks(ids: number[]) {
   try {
-    await invoke<number>("restore_tasks", { ids });
+    await writeTasks<number>("restore_tasks", { ids });
     await loadTasks({ quiet: true });
   } catch (err) {
     toast.showError("撤销失败", err);
@@ -126,7 +151,7 @@ function recordQuadrantCorrection(input: QuadrantCorrection) {
  */
 async function reorderTasks(moves: TaskMove[]) {
   const changes = moves.flatMap((move) => {
-    const task = tasks.value.find((t) => t.id === move.id);
+    const task = taskIndex.value.get(move.id);
     return task ? [{ task, move, prevQuadrant: task.quadrant, prevPriority: task.priority }] : [];
   });
   if (!changes.length) return;
@@ -135,7 +160,7 @@ async function reorderTasks(moves: TaskMove[]) {
     task.priority = move.priority;
   }
   try {
-    await invoke("reorder_tasks", { moves: changes.map((c) => c.move) });
+    await writeTasks("reorder_tasks", { moves: changes.map((c) => c.move) });
   } catch (err) {
     for (const { task, prevQuadrant, prevPriority } of changes) {
       task.quadrant = prevQuadrant;
@@ -164,7 +189,7 @@ function learnFromMove(task: Task, from: Quadrant, to: Quadrant) {
 }
 
 async function updateTask(input: TaskUpdate) {
-  const task = tasks.value.find((t) => t.id === input.id);
+  const task = taskIndex.value.get(input.id);
   if (!task) return;
   // Snapshot every field the write touches, so a failed save restores all of them.
   const prev = {
@@ -176,7 +201,7 @@ async function updateTask(input: TaskUpdate) {
   };
   Object.assign(task, { ...input, title: input.title.trim() });
   try {
-    await invoke("update_task", { input });
+    await writeTasks("update_task", { input });
   } catch (err) {
     Object.assign(task, prev);
     throw err;
@@ -186,22 +211,7 @@ async function updateTask(input: TaskUpdate) {
 
 // Remote sync refreshes are deferred while a card is being dragged,
 // otherwise a reload could swap the list out from under the pointer.
-let refreshHolds = 0;
-let refreshPending = false;
-
-function holdRemoteRefresh(): () => void {
-  refreshHolds++;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    refreshHolds--;
-    if (refreshHolds === 0 && refreshPending) {
-      refreshPending = false;
-      void loadTasks({ quiet: true }).catch(() => {});
-    }
-  };
-}
+const holdRemoteRefresh = refresh.pause;
 
 async function getLearningStats(): Promise<LearningStats> {
   return await invoke<LearningStats>("get_learning_stats");
@@ -215,7 +225,7 @@ async function clearDone() {
   // Optimistic: remove done tasks, offer undo
   tasks.value = tasks.value.filter((t) => !t.done);
   try {
-    const ids = await invoke<number[]>("clear_done_tasks");
+    const ids = await writeTasks<number[]>("clear_done_tasks");
     toast.show(`已清除 ${ids.length} 个已完成任务`, {
       action: { label: "撤销", run: () => restoreTasks(ids) },
     });
@@ -254,7 +264,7 @@ async function exportToFile(): Promise<string | null> {
 }
 
 async function importData(json: string): Promise<number> {
-  const count = await invoke<number>("import_data", { json });
+  const count = await writeTasks<number>("import_data", { json });
   await loadTasks();
   return count;
 }
@@ -328,24 +338,10 @@ function tasksByQuadrant(q: Quadrant): Task[] {
   return byQuadrant.value[q];
 }
 
-let remoteWatchStarted = false;
-
-function watchRemoteTasks() {
-  if (remoteWatchStarted) return;
-  remoteWatchStarted = true;
-  void listen("tasks-changed", () => {
-    if (refreshHolds > 0) {
-      refreshPending = true;
-      return;
-    }
-    void loadTasks({ quiet: true }).catch(() => {});
-  });
-}
-
 export function useTasks() {
-  watchRemoteTasks();
   return {
     tasks,
+    tasksLoaded,
     loading,
     settings,
     loadTasks,
