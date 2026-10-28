@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { reconcileTasks } from "./taskSnapshot";
+import { applyTaskDelta } from "./taskDelta";
 import { compareTasks, lowerBound } from "./ordering";
 import type { Task } from "./types";
 
@@ -46,6 +47,38 @@ it("bounds batch reorder lookup work linearly at 5,000 tasks", async () => {
   expect(invoke).toHaveBeenCalledWith("reorder_tasks", expect.anything());
   expect(idReads).toBeLessThanOrEqual(10_000);
   console.info("5,000-task batch reorder:", { ms, idReads, previousLinearScanReads: 5_000 * 5_001 / 2 });
+});
+
+it("folds a one-row delta into a 10,000-task board without touching the rest", () => {
+  const tasks = ref(fixture(10_000));
+  const sorted = computed(() => [...tasks.value].sort(compareTasks));
+  const grouped = computed(() => {
+    const out: Record<number, Task[]> = { 1: [], 2: [], 3: [], 4: [] };
+    for (const task of sorted.value) out[task.quadrant].push(task);
+    return out;
+  });
+  expect(grouped.value[1]).toHaveLength(10_000);
+
+  const edited = tasks.value[4_242];
+  const start = performance.now();
+  const unchanged: Task[][] = [];
+  for (let i = 0; i < 50; i++) unchanged.push(applyTaskDelta(tasks.value, {
+    generation: 1, watermark: 100 + i, full: false, tasks: [], removed: [],
+  }));
+  const noOpMs = +(performance.now() - start).toFixed(2);
+  expect(unchanged.every((list) => list === tasks.value)).toBe(true);
+
+  // A real edit: one object is written, the array changes, and the board keeps its identity
+  // for the other 9,999 cards.
+  const before = grouped.value[1];
+  tasks.value = applyTaskDelta(tasks.value, {
+    generation: 1, watermark: 200, full: false,
+    tasks: [{ ...edited, title: "edited" }], removed: [],
+  });
+  expect(tasks.value).toHaveLength(10_000);
+  expect(edited.title).toBe("edited");
+  expect(grouped.value[1].filter((t) => t.id !== edited.id).every((t) => before.includes(t))).toBe(true);
+  console.info("10,000-task incremental refresh:", { noOpMsFor50Deltas: noOpMs, changedObjects: 1 });
 });
 
 it("bounds geometry reads independently of total DOM size", () => {

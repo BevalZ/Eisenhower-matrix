@@ -1,7 +1,7 @@
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { createRefreshQueue } from "../refreshQueue";
-import { reconcileTasks } from "../taskSnapshot";
+import { applyTaskDelta, type TaskCursor, type TaskDelta } from "../taskDelta";
 import {
   isUnscored,
   quadrantFromScores,
@@ -31,12 +31,35 @@ const loading = ref(true);
 const tasksLoaded = ref(false);
 const settings = ref<Settings>({ api_key_configured: false, theme: "light", webdav_configured: false });
 const taskIndex = computed(() => new Map(tasks.value.map((task) => [task.id, task])));
+
+// Incremental reads: the board asks for what changed since the last answer instead of the
+// whole table. Refreshes after a bulk command drop the cursor and take a full snapshot again,
+// and every so often one is taken anyway, so a missed delta can never stick.
+const FULL_RESYNC_EVERY = 20;
+let cursor: TaskCursor | null = null;
+let deltasSinceFull = 0;
+
+function invalidateTaskCache() {
+  cursor = null;
+  deltasSinceFull = 0;
+}
+
+function applyTasks(delta: TaskDelta) {
+  tasks.value = applyTaskDelta(tasks.value, delta);
+  cursor = { generation: delta.generation, watermark: delta.watermark };
+  deltasSinceFull = delta.full ? 0 : deltasSinceFull + 1;
+  tasksLoaded.value = true;
+}
+
 const refresh = createRefreshQueue(
-  () => invoke<Task[]>("get_tasks"),
-  (incoming) => {
-    tasks.value = reconcileTasks(tasks.value, incoming);
-    tasksLoaded.value = true;
+  () => {
+    const resume = deltasSinceFull >= FULL_RESYNC_EVERY ? null : cursor;
+    return invoke<TaskDelta>("get_tasks_delta", {
+      generation: resume?.generation ?? null,
+      watermark: resume?.watermark ?? null,
+    });
   },
+  applyTasks,
 );
 let loadingRequests = 0;
 
@@ -52,6 +75,12 @@ async function loadTasks(options?: { quiet?: boolean }) {
 
 // Reads started before a write must not overwrite its optimistic update.
 let pendingWrite: Promise<unknown> = Promise.resolve();
+/** Bulk commands rewrite rows a delta cannot describe, so take a full snapshot instead. */
+async function reloadTasksFully() {
+  invalidateTaskCache();
+  await loadTasks();
+}
+
 async function writeTasks<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const release = refresh.pause();
   // Native commands run on worker threads; preserve the user's write order.
@@ -135,6 +164,7 @@ async function deleteTask(id: number) {
 async function restoreTasks(ids: number[]) {
   try {
     await writeTasks<number>("restore_tasks", { ids });
+    invalidateTaskCache();
     await loadTasks({ quiet: true });
   } catch (err) {
     toast.showError("撤销失败", err);
@@ -231,6 +261,7 @@ async function clearDone() {
     });
   } catch (err) {
     toast.showError("清除失败", err);
+    invalidateTaskCache();
     await loadTasks({ quiet: true }).catch(() => {});
   }
 }
@@ -265,7 +296,7 @@ async function exportToFile(): Promise<string | null> {
 
 async function importData(json: string): Promise<number> {
   const count = await writeTasks<number>("import_data", { json });
-  await loadTasks();
+  await reloadTasksFully();
   return count;
 }
 
@@ -281,13 +312,13 @@ async function getWebdavConfig(): Promise<WebdavInfo> {
 async function syncToWebdav(): Promise<SyncResult> {
   const result = await invoke<SyncResult>("sync_to_webdav");
   // 同步可能带回 AI 配置（含 Key），所以设置也要重读
-  await Promise.all([loadTasks(), loadSettings()]);
+  await Promise.all([reloadTasksFully(), loadSettings()]);
   return result;
 }
 
 async function restoreFromWebdav(): Promise<SyncResult> {
   const result = await invoke<SyncResult>("restore_from_webdav");
-  await Promise.all([loadTasks(), loadSettings()]);
+  await Promise.all([reloadTasksFully(), loadSettings()]);
   return result;
 }
 
@@ -314,13 +345,13 @@ async function setPeerSyncListening(enabled: boolean): Promise<string> {
 
 async function syncWithPeer(ip: string): Promise<SyncResult> {
   const result = await invoke<SyncResult>("sync_with_peer", { ip });
-  await Promise.all([loadTasks(), loadSettings()]);
+  await Promise.all([reloadTasksFully(), loadSettings()]);
   return result;
 }
 
 async function syncAllPeers(): Promise<SyncResult> {
   const result = await invoke<SyncResult>("sync_all_peers");
-  await Promise.all([loadTasks(), loadSettings()]);
+  await Promise.all([reloadTasksFully(), loadSettings()]);
   return result;
 }
 

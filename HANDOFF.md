@@ -13,7 +13,7 @@
 
 桌面端（Windows/macOS/Linux）与 **Android 端**功能齐备，代码在 `main`；所有安装包与 APK 都由 **GitHub Actions 远程构建**，本机不需要也不应该打包。Android **已配置正式签名**（上传密钥在仓库 Secrets 里），每次构建产出签名 APK + AAB。
 
-- 版本：工作区 `3.4.3`（三处版本已一致；本轮未发布）。2026-10-25 已落实性能机制及回归预算，详见 [性能报告](docs/performance.md)。
+- 版本：工作区 `3.4.3`（三处版本已一致；本轮未发布）。2026-10-25 落实性能机制与回归预算、2026-10-29 落地增量任务刷新与看板虚拟列表，详见 [性能报告](docs/performance.md)。
 - 最新发布：[Release v3.4.2](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.2)（详见第 8 轮）
 - 上一个发布：[Release v3.4.0](https://github.com/BevalZ/Eisenhower-matrix/releases/tag/v3.4.0)（`03d4083`，Android 资产已替换为签名版）
 - Android 签名：密钥库备份在 `D:\Github_repos\Hydens\android-signing\`（PKCS12 + 口令说明 + 生成脚本），证书 SHA-256 `A3:58:FA:49:…:62:A9`；**这份备份需要你自己再存一份**，丢了无法用同一签名更新已分发的应用
@@ -103,22 +103,28 @@ python scripts/ci.py log <job_id> "错误|error"     # 过滤日志
 | 文件 | 职责 |
 |---|---|
 | `App.vue` | 窗口判定（主窗口 vs 悬浮球）、看板/统计切换、全局快捷键、启动加载与主题 |
-| `components/QuadrantBoard.vue` | 四象限看板、快速添加、键盘移动、接线拖拽 |
-| `components/TaskCard.vue` | 卡片渲染、键盘操作、截止时间徽标；**`touch-action: none` 是触屏滚动手势实现的前提** |
+| `components/QuadrantBoard.vue` | 四象限看板（网格、表头、快捷计数）、落点/键盘移动的编排、拖拽 ghost；每象限渲染一个 `QuadrantColumn` |
+| `components/QuadrantColumn.vue` | 单个象限的列表：全量渲染或在 200 行以上开窗口渲染；注册给看板的拖拽几何与 `ensureVisible` |
+| `components/TaskCard.vue` | 卡片渲染、键盘操作、截止时间徽标；**`touch-action: none` 是触屏滚动手势实现的前提**；`enter` 关闭入场动画 |
 | `components/TaskWizard.vue` | AI 对话式新建（五问 + 本地兜底估算） |
 | `components/TaskEditDialog.vue` / `StatsPanel.vue` / `SettingsDialog.vue` / `FloatingBall.vue` / `ToastHost.vue` | 编辑 / 统计 / 设置（常规·数据·WebDAV·多端）/ 桌面悬浮球 / 提示条 |
-| `composables/useTasks.ts` | **全局状态唯一入口**：所有 `invoke` 封装、乐观更新与回滚、象限分组的 computed |
-| `composables/useBoardDrag.ts` | 指针拖拽 + 触屏手势（滑动滚动 / 长按后拖动）、ghost 动画 |
+| `composables/useTasks.ts` | **全局状态唯一入口**：所有 `invoke` 封装、增量游标、乐观更新与回滚、象限分组的 computed |
+| `composables/useBoardDrag.ts` | 指针拖拽 + 触屏手势（滑动滚动 / 长按后拖动）、ghost 动画；窗口列由 `geometry` 回调给落点 |
 | `composables/usePlatform.ts` | 平台判定（`platform` 命令），手机端隐藏桌面专属 UI |
-| `composables/useDueReminders.ts` | 分钟时钟 + 截止提醒（去重记录在 localStorage） |
+| `composables/useDueReminders.ts` | 分钟时钟 + 截止提醒（去重记录在 localStorage，只对有截止时间的任务算签名） |
 | `ordering.ts` / `due.ts` / `wizard.ts` / `types.ts` | 纯逻辑：排序与落点、`touchIntent`、截止时间解析、向导选项、类型与象限元数据 |
+| `refreshQueue.ts` / `taskSnapshot.ts` / `taskDelta.ts` | 刷新合并与读写互斥 / 全量快照的对象复用 / 增量结果合并（`full` 时回落到快照） |
+| `virtualRows.ts` | 虚拟列表的纯几何：偏移前缀和、可视窗口、落点二分、行高估算与默认值 |
 
 坑：
 - `useTasks().tasksByQuadrant(q)` 返回的是**内部数组**（只读，别原地改）；象限分组只在数据变化时算一次，别再在模板里反复 filter。
+- **增量游标**：`get_tasks_delta` 的水位是「表内最大 `updated_at`」，前端只在启动、每 20 次增量、以及批量命令（导入/恢复/同步/清除已完成）后取全量；新写入路径走 `Db::next_stamp` 取严格递增的戳——**不要再把写入时间戳改回 `max(updated_at+1, now)` 或裸墙钟**，同一毫秒内的连续写入会因此被增量查询漏掉。批量重写整表或带入对端时间戳的路径（`import_backup`、`merge_remote`）必须 `bump_generation()` + `reseed_stamp()`。
+- **虚拟列表**：阈值在 `virtualRows.ts` 的 `WINDOW_FROM`（每象限 200 行）。`LIST_PADDING`/`CARD_GAP` 与 `.q-body` 的 padding、`.task-card` 的 margin-bottom 是硬耦合，改 CSS 必须同步改常量；`.q-list` 不能设 `position: relative`，否则卡片 `offsetTop` 的基准变了，全量模式的 DOM 落点会整体偏一个 padding。行高靠已挂载卡片实测 + 未挂载行估算，窗口尺寸变化时清空实测缓存。
 - 触屏：卡片是 `touch-action: none`，所以列表滚动由 `useBoardDrag` 手工实现；判断逻辑在 `ordering.ts::touchIntent`（有单测），改阈值先改那里。
 - 乐观更新要成对写：先改本地、失败回滚（`useTasks` 里已有模式，新增写操作请照抄）。
 - `useTasks` 不再隐式注册事件；主窗口与统计页用 `useAppEvent` 管理生命周期。任务写入经过队列保持顺序，拖拽/写入用刷新 hold 防止旧快照覆盖。
 - 看板 `.grid` 的 `min-height: 0` 和 `minmax(0, 1fr)` 必须保留，否则长列表会把网格撑到数万像素高，象限内滚动失效。拖拽节点缓存只缓存节点，DOM 更新后失效。
+- 键盘移动后要聚焦的卡片可能不在窗口里（窗口模式），走 `columns[q].ensureVisible(id)` 滚动后再聚焦，别直接 `querySelector(...).focus()`。
 
 ### 后端 `src-tauri/src/`
 
@@ -148,10 +154,15 @@ python scripts/ci.py log <job_id> "错误|error"     # 过滤日志
 node node_modules/vue-tsc/bin/vue-tsc.js --noEmit
 node node_modules/vitest/vitest.mjs run
 
-# Rust 单测（本机工具链偏旧，必须加 --ignore-rust-version）
-cd src-tauri && cargo test --offline --ignore-rust-version
+# Rust：类型检查（本机可以跑）；完整测试本机链接不过，交给 CI
+cd src-tauri && cargo check --offline --ignore-rust-version --all-targets
 
-# 远程：跑完整 CI（本机唯一能验证 Android 的方式）
+# 远程：跑完整 CI（本机唯一能验证 Rust 测试与 Android 的方式）
+python scripts/ci.py watch main ci.yml
+
+# 浏览器：生产构建 + IPC 夹具（详见 docs/performance.md「可复跑的检查」）
+node node_modules/vite/bin/vite.js build
+node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 1421
 python scripts/ci.py watch main android.yml
 ```
 
@@ -173,13 +184,22 @@ python scripts/ci.py watch main android.yml
 8. **P3 · 窄屏只调了手机竖屏**：平板/横屏未验证。
 9. **P3 · `restore_from_webdav` 是整库覆盖并重排 id**（设计如此，UI 有二次确认）。
 10. **P3 · `sync_all_peers` 串行同步**：设备多时较慢，但顺序同步避免了 SQLite 锁竞争，暂不改。
-11. **本轮性能验证待补**：完整 Rust 测试执行、Android 真机及原生进程内存测量。前端 61 项测试、构建、资源预算和 Edge 生产界面验证已通过；数万活跃任务的虚拟列表与增量同步仍未实现，见 `docs/performance.md`。
+11. **P3 · 同步传输仍是全量快照**：跨设备走的是完整任务表（上限 16MB），分页/增量协议未做；本轮的增量只作用于本机前端 ↔ Rust 之间。
+12. **P3 · 未发布**：工作区的性能改动（第 9、10 轮）已推 `main` 并通过 CI，但没打 tag；要发布按「发布流程」记忆里的步骤走。
 
 ---
 
 ## 8. 变更日志（新的一轮追加在最上面）
 
-### 第 9 轮 · 2026-10-25 · 性能机制与回归预算（工作区，未提交）
+### 第 10 轮 · 2026-10-29 · 增量刷新 + 看板虚拟列表（工作区，未发布）
+
+- **增量任务刷新**：新增 `get_tasks_delta(generation, watermark)`，前端只取水位之后写入的行与已删除 id；首次加载、每 20 次增量、以及导入/恢复/同步/清除已完成之后取全量。为让「大于水位」不漏行，本地写入改用 `Db::next_stamp`（墙钟与上一个戳 +1 取大者，严格递增），导入与合并后 `reseed_stamp` 跟随表内最大时间戳；`import_backup`、`merge_remote` 变更时 `bump_generation()`。Rust 新增 4 个用例覆盖首次全量、只带变更、批量重写回落全量、对端时钟超前。
+- **看板虚拟列表**：`QuadrantBoard` 拆出 `QuadrantColumn`，每象限独立渲染；超过 200 行才开窗口（只挂载视口附近的行 + 上下占位块），200 行以内行为与原来完全一致。拖拽时只有指针所在列重渲染，落点改由列的前缀偏移二分（含占位高度补偿）计算，`useBoardDrag` 通过 `geometry` 回调取用；键盘移到窗口外的行先 `ensureVisible` 再聚焦；滚动时挂载的行不重放入场动画。
+- **提醒时钟**：签名只包含有截止时间的任务，避免每次任务变化都拼 1 万条字符串。
+- **验证**：前端 110 项测试、类型检查、构建、包体积预算（主窗口 JS 138,985 / 143,360 B）通过；`cargo check --all-targets` 通过，Rust 测试交 CI（本机仍缺 MSVC 链接器）。Edge 生产构建：1000 任务下窗口模式挂载 36 张卡片、滚到底部可达第 1000 张、深处卡片可拖出、远端单行改动经增量就地更新、100 次事件 0 DOM 变更；120 任务的小列表全部挂载无占位块。1 万任务对比第 9 轮构建：首屏 16.8s → 3.2s、挂载卡片 10,000 → 36、`.board` 元素 163,380 → 638、滚动每步 133–146ms → 23–26ms。数据见 [性能报告](docs/performance.md)。
+- **未验证**：Android 真机；真机上触屏拖拽在虚拟列表里的手感（自动滚动 + 长按拖动没在真机跑过）。
+
+### 第 9 轮 · 2026-10-25 · 性能机制与回归预算（提交 `4a135a3`）
 
 - 基线 `b373c96`。增加刷新合并/过期快照丢弃、任务对象复用、批量移动 ID 索引、写入队列、拖拽二分几何读取与节点缓存；修复大列表网格高度约束。
 - 分离悬浮球入口，弹窗/统计按需加载；异步监听可靠释放，隐藏窗口延后刷新并停止提醒时钟，提醒缓存按当前任务清理。

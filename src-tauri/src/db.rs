@@ -1,12 +1,43 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 use chrono::{Local, TimeZone, Utc};
 
 use crate::models::*;
 
+/// Board order for every task query: unfinished first, then higher priority, ties by id.
+const TASK_ORDER: &str = "ORDER BY done ASC, priority DESC, id ASC";
+
+const TASK_COLUMNS: &str = "id, title, description, quadrant, priority,
+                            importance_score, urgency_score, done,
+                            created_at, completed_at, due_at";
+
+pub fn read_task(row: &Row<'_>) -> rusqlite::Result<Task> {
+    Ok(Task {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        description: row.get(2)?,
+        quadrant: row.get(3)?,
+        priority: row.get(4)?,
+        importance_score: row.get(5)?,
+        urgency_score: row.get(6)?,
+        done: row.get::<_, i64>(7)? != 0,
+        created_at: row.get(8)?,
+        completed_at: row.get(9)?,
+        due_at: row.get(10)?,
+    })
+}
+
 pub struct Db {
     pub conn: Mutex<Connection>,
+    /// Bumped when the task table is rewritten in bulk (import, WebDAV restore, peer merge).
+    /// Incremental readers compare it and fall back to a full snapshot when it moved.
+    generation: AtomicU64,
+    /// Highest `updated_at` this process has handed out or seen in the table. Local writes take
+    /// a value above it, so a row written after a reader's watermark always has a larger stamp
+    /// and no incremental read can miss it (the wall clock can lag a burst of writes).
+    last_stamp: AtomicI64,
 }
 
 impl Db {
@@ -20,6 +51,8 @@ impl Db {
         let conn = Connection::open(&path).map_err(|e| e.to_string())?;
         let db = Db {
             conn: Mutex::new(conn),
+            generation: AtomicU64::new(1),
+            last_stamp: AtomicI64::new(0),
         };
         db.migrate()?;
         Ok(db)
@@ -30,9 +63,41 @@ impl Db {
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
         let db = Db {
             conn: Mutex::new(conn),
+            generation: AtomicU64::new(1),
+            last_stamp: AtomicI64::new(0),
         };
         db.migrate()?;
         Ok(db)
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    /// A cursor taken before this call must not be trusted afterwards.
+    fn bump_generation(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Timestamp for a local write: the wall clock, or one tick past the highest stamp already
+    /// used so consecutive writes never share a value with an older row.
+    fn next_stamp(&self, now: i64) -> i64 {
+        let mut seen = self.last_stamp.load(Ordering::SeqCst);
+        loop {
+            let next = if now > seen { now } else { seen + 1 };
+            match self.last_stamp.compare_exchange_weak(seen, next, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return next,
+                Err(actual) => seen = actual,
+            }
+        }
+    }
+
+    /// Fold the table's own maximum back into the counter, after rows arrived with timestamps
+    /// from another device (whose clock may be ahead of this one).
+    fn reseed_stamp(&self, conn: &Connection) -> Result<(), String> {
+        self.last_stamp.fetch_max(watermark_of(conn)?, Ordering::SeqCst);
+        Ok(())
     }
 
     fn migrate(&self) -> Result<(), String> {
@@ -81,6 +146,8 @@ impl Db {
 
         ensure_sync_columns(&conn)?;
         prune_tombstones(&conn)?;
+        // Rows loaded from disk may carry stamps from an earlier run or another device.
+        self.reseed_stamp(&conn)?;
         Ok(())
     }
 
@@ -229,6 +296,11 @@ impl Db {
         let count = backup.tasks.len();
         drop(insert);
         tx.commit().map_err(|e| e.to_string())?;
+        // The table was replaced wholesale with rows that keep their original `updated_at`,
+        // so incremental readers could otherwise miss older rows: force a full snapshot, and
+        // fold the restored stamps back into the counter local writes build on.
+        self.bump_generation();
+        self.reseed_stamp(&conn)?;
         Ok(count)
     }
 
@@ -236,41 +308,49 @@ impl Db {
 
     pub fn get_tasks(&self) -> Result<Vec<Task>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, title, description, quadrant, priority,
-                        importance_score, urgency_score, done,
-                        created_at, completed_at, due_at
-                 FROM tasks
-                 WHERE deleted_at IS NULL
-                 ORDER BY done ASC, priority DESC, id ASC",
-            )
-            .map_err(|e| e.to_string())?;
+        visible_tasks(&conn, None)
+    }
 
-        let rows = stmt
-            .query_map(params![], |row| {
-                Ok(Task {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    description: row.get(2)?,
-                    quadrant: row.get(3)?,
-                    priority: row.get(4)?,
-                    importance_score: row.get(5)?,
-                    urgency_score: row.get(6)?,
-                    done: row.get::<_, i64>(7)? != 0,
-                    created_at: row.get(8)?,
-                    completed_at: row.get(9)?,
-                    due_at: row.get(10)?,
-                })
-
-            })
-            .map_err(|e| e.to_string())?;
-
-        let mut tasks = Vec::new();
-        for row in rows {
-            tasks.push(row.map_err(|e| e.to_string())?);
-        }
-        Ok(tasks)
+    /// What changed since `watermark`, for the frontend's incremental refresh.
+    ///
+    /// A missing watermark or a generation change answers with the whole board (`full: true`),
+    /// which is also what a first load gets. Otherwise only rows written after the watermark
+    /// come back, plus the ids of tasks that were deleted, so a steady-state refresh costs one
+    /// query over the changed rows instead of the entire table.
+    ///
+    /// The comparison is strictly greater than the watermark, which only holds because local
+    /// writes take a stamp above everything already stored (`next_stamp`) instead of the raw
+    /// clock: a burst of writes inside one millisecond can therefore never hide behind an
+    /// equal timestamp.
+    pub fn get_tasks_delta(
+        &self,
+        generation: Option<u64>,
+        watermark: Option<i64>,
+    ) -> Result<TaskDelta, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let current = self.generation();
+        let since = match watermark {
+            Some(value) if generation == Some(current) && value >= 0 => value,
+            _ => {
+                return Ok(TaskDelta {
+                    generation: current,
+                    watermark: watermark_of(&conn)?.max(watermark.unwrap_or(0)),
+                    full: true,
+                    tasks: visible_tasks(&conn, None)?,
+                    removed: Vec::new(),
+                });
+            }
+        };
+        let tasks = visible_tasks(&conn, Some(since))?;
+        let removed = removed_since(&conn, since)?;
+        Ok(TaskDelta {
+            generation: current,
+            // Never move the watermark backwards: the client would re-ask for old rows forever.
+            watermark: watermark_of(&conn)?.max(since),
+            full: false,
+            tasks,
+            removed,
+        })
     }
 
     pub fn create_task(&self, input: &TaskInput) -> Result<Task, String> {
@@ -285,7 +365,7 @@ impl Db {
         validate_unit_score("重要性", input.importance_score)?;
         validate_unit_score("紧急性", input.urgency_score)?;
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let now = Utc::now().timestamp_millis();
+        let now = self.next_stamp(Utc::now().timestamp_millis());
         let uid = uuid::Uuid::new_v4().to_string();
         let device = device_id_locked(&conn)?;
         conn.execute(
@@ -334,13 +414,13 @@ impl Db {
         validate_priority(input.priority)?;
         validate_due(input.due_at)?;
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let now = Utc::now().timestamp_millis();
+        let now = self.next_stamp(Utc::now().timestamp_millis());
         let device = device_id_locked(&conn)?;
         let changed = conn
             .execute(
                 "UPDATE tasks
                  SET title = ?1, description = ?2, quadrant = ?3, priority = ?4, due_at = ?5,
-                     updated_at = max(updated_at + 1, ?6), updated_by = ?7
+                     updated_at = ?6, updated_by = ?7
                  WHERE id = ?8 AND deleted_at IS NULL",
                 params![title, input.description, input.quadrant, input.priority, input.due_at, now, device, input.id],
 
@@ -364,13 +444,13 @@ impl Db {
             .map_err(|e| e.to_string())?
             .ok_or("任务不存在或已被删除")?;
         let new_done = 1 - done;
-        let now = Utc::now().timestamp_millis();
+        let now = self.next_stamp(Utc::now().timestamp_millis());
         let completed_at = if new_done == 1 { Some(now) } else { None };
         let device = device_id_locked(&conn)?;
         conn.execute(
             "UPDATE tasks
              SET done = ?1, completed_at = ?2,
-                 updated_at = max(updated_at + 1, ?3), updated_by = ?4
+                 updated_at = ?3, updated_by = ?4
              WHERE id = ?5 AND deleted_at IS NULL",
             params![new_done, completed_at, now, device, id],
         )
@@ -380,12 +460,12 @@ impl Db {
 
     pub fn delete_task(&self, id: i64) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let now = Utc::now().timestamp_millis();
+        let now = self.next_stamp(Utc::now().timestamp_millis());
         let device = device_id_locked(&conn)?;
         conn.execute(
             "UPDATE tasks
-             SET deleted_at = max(updated_at + 1, ?1),
-                 updated_at = max(updated_at + 1, ?1),
+             SET deleted_at = ?1,
+                 updated_at = ?1,
                  updated_by = ?2
              WHERE id = ?3 AND deleted_at IS NULL",
             params![now, device, id],
@@ -408,12 +488,12 @@ impl Db {
         }
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        let now = Utc::now().timestamp_millis();
+        let now = self.next_stamp(Utc::now().timestamp_millis());
         let device = device_id_locked(&tx)?;
         let mut update = tx.prepare_cached(
             "UPDATE tasks
              SET quadrant = ?1, priority = ?2,
-                 updated_at = max(updated_at + 1, ?3), updated_by = ?4
+                 updated_at = ?3, updated_by = ?4
              WHERE id = ?5 AND deleted_at IS NULL"
         ).map_err(|e| e.to_string())?;
         for m in moves {
@@ -446,12 +526,12 @@ impl Db {
         if ids.is_empty() {
             return Ok(ids);
         }
-        let now = Utc::now().timestamp_millis();
+        let now = self.next_stamp(Utc::now().timestamp_millis());
         let device = device_id_locked(&tx)?;
         tx.execute(
             "UPDATE tasks
-             SET deleted_at = max(updated_at + 1, ?1),
-                 updated_at = max(updated_at + 1, ?1),
+             SET deleted_at = ?1,
+                 updated_at = ?1,
                  updated_by = ?2
              WHERE done = 1 AND deleted_at IS NULL",
             params![now, device],
@@ -468,13 +548,13 @@ impl Db {
         }
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        let now = Utc::now().timestamp_millis();
+        let now = self.next_stamp(Utc::now().timestamp_millis());
         let device = device_id_locked(&tx)?;
         let mut restored = 0usize;
         let mut update = tx.prepare_cached(
             "UPDATE tasks
              SET deleted_at = NULL,
-                 updated_at = max(updated_at + 1, ?1),
+                 updated_at = ?1,
                  updated_by = ?2
              WHERE id = ?3 AND deleted_at IS NOT NULL"
         ).map_err(|e| e.to_string())?;
@@ -881,8 +961,60 @@ impl Db {
             }
             tx.commit().map_err(|e| e.to_string())?;
         }
+        if applied > 0 {
+            // Merged rows keep the peer's (possibly older) timestamps, so a cursor held by the
+            // frontend cannot describe them: hand out a full snapshot instead. The peer's clock
+            // may also be ahead of ours, so the counter has to follow the table.
+            self.bump_generation();
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            self.reseed_stamp(&conn)?;
+        }
         Ok(applied)
     }
+}
+
+/// Tasks in board order, optionally only those written after `since`.
+fn visible_tasks(conn: &Connection, since: Option<i64>) -> Result<Vec<Task>, String> {
+    let filter = match since {
+        Some(_) => " AND updated_at > ?1",
+        None => "",
+    };
+    let mut stmt = conn
+        .prepare_cached(&format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE deleted_at IS NULL{filter} {TASK_ORDER}"
+        ))
+        .map_err(|e| e.to_string())?;
+    let mapped = match since {
+        Some(value) => stmt.query_map(params![value], read_task),
+        None => stmt.query_map(params![], read_task),
+    }
+    .map_err(|e| e.to_string())?;
+    mapped
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+/// Ids of tasks tombstoned after `since`; the board drops them without a full reload.
+fn removed_since(conn: &Connection, since: i64) -> Result<Vec<i64>, String> {
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT id FROM tasks WHERE deleted_at IS NOT NULL AND updated_at > ?1 ORDER BY id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![since], |row| row.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// Largest `updated_at` in the table, tombstones included: the cursor for the next delta.
+fn watermark_of(conn: &Connection) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(updated_at), 0) FROM tasks",
+        params![],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn ensure_sync_columns(conn: &Connection) -> Result<(), String> {
@@ -1463,6 +1595,117 @@ mod tests {
 
         db.restore_tasks(&[t.id]).unwrap();
         assert_eq!(db.get_stats().unwrap().pending, 1);
+    }
+
+    fn delta_task(uid: &str, updated_at: i64) -> SyncTask {
+        SyncTask {
+            uid: uid.into(),
+            title: format!("peer {uid}"),
+            description: String::new(),
+            quadrant: 2,
+            priority: 30.0,
+            importance_score: 3.0,
+            urgency_score: 1.0,
+            done: false,
+            created_at: 1_700_000_000_000,
+            completed_at: None,
+            updated_at,
+            updated_by: "peer-device".into(),
+            deleted_at: None,
+            due_at: None,
+        }
+    }
+
+    #[test]
+    fn task_delta_answers_the_first_read_with_the_whole_board() {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.create_task(&input("a", 1, 50.0)).unwrap();
+        db.create_task(&input("b", 2, 40.0)).unwrap();
+
+        let delta = db.get_tasks_delta(None, None).unwrap();
+        assert!(delta.full);
+        assert_eq!(delta.tasks.len(), 2);
+        assert!(delta.removed.is_empty());
+        assert!(delta.watermark > 0);
+        assert!(delta.tasks.iter().any(|t| t.id == a.id));
+    }
+
+    #[test]
+    fn task_delta_carries_only_what_changed() {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.create_task(&input("a", 1, 50.0)).unwrap();
+        let b = db.create_task(&input("b", 1, 40.0)).unwrap();
+        let first = db.get_tasks_delta(None, None).unwrap();
+
+        // Nothing happened: an empty payload and a cursor that does not move.
+        let idle = db.get_tasks_delta(Some(first.generation), Some(first.watermark)).unwrap();
+        assert!(!idle.full);
+        assert!(idle.tasks.is_empty() && idle.removed.is_empty());
+        assert_eq!(idle.watermark, first.watermark);
+
+        // Two writes inside the same millisecond still get distinct stamps, so the second one
+        // cannot hide behind a watermark it shares a timestamp with.
+        let edit = |title: &str| TaskUpdate {
+            id: b.id,
+            title: title.into(),
+            description: String::new(),
+            quadrant: 1,
+            priority: 40.0,
+            due_at: None,
+        };
+        db.update_task(&edit("b2")).unwrap();
+        db.update_task(&edit("b3")).unwrap();
+        let edited = db.get_tasks_delta(Some(idle.generation), Some(idle.watermark)).unwrap();
+        assert_eq!(edited.tasks.iter().map(|t| t.id).collect::<Vec<_>>(), vec![b.id]);
+        assert_eq!(edited.tasks[0].title, "b3");
+        assert!(edited.watermark > idle.watermark);
+
+        // A deletion arrives as an id to drop, not as a row.
+        db.delete_task(a.id).unwrap();
+        let deleted = db.get_tasks_delta(Some(edited.generation), Some(edited.watermark)).unwrap();
+        assert_eq!(deleted.removed, vec![a.id]);
+        assert!(deleted.tasks.is_empty());
+    }
+
+    #[test]
+    fn task_delta_falls_back_to_a_full_snapshot_after_a_bulk_rewrite() {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.create_task(&input("a", 1, 50.0)).unwrap();
+        let first = db.get_tasks_delta(None, None).unwrap();
+
+        // A restore replaces the table with rows that keep their original timestamps, which a
+        // cursor taken before it cannot describe.
+        let backup = db.export_all().unwrap();
+        db.import_all(&backup).unwrap();
+
+        let after = db.get_tasks_delta(Some(first.generation), Some(first.watermark)).unwrap();
+        assert!(after.full);
+        assert_eq!(after.tasks.len(), 1);
+        assert_eq!(after.tasks[0].id, a.id);
+
+        // The cursor is usable again from the fresh snapshot.
+        let idle = db.get_tasks_delta(Some(after.generation), Some(after.watermark)).unwrap();
+        assert!(!idle.full && idle.tasks.is_empty());
+    }
+
+    #[test]
+    fn task_delta_keeps_working_after_a_merge_from_a_future_clock() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_task(&input("local", 1, 50.0)).unwrap();
+        // A peer whose clock runs ahead of ours.
+        let ahead = 4_000_000_000_000i64;
+        assert_eq!(db.merge_remote(&[delta_task("peer-device-1", ahead)], SYNC_SCHEMA).unwrap(), 1);
+
+        let full = db.get_tasks_delta(None, None).unwrap();
+        assert!(full.full);
+        assert_eq!(full.tasks.len(), 2);
+        assert_eq!(full.watermark, ahead);
+
+        // A local write afterwards must still be newer than the peer's stamp.
+        let local = db.create_task(&input("after", 1, 30.0)).unwrap();
+        let delta = db.get_tasks_delta(Some(full.generation), Some(full.watermark)).unwrap();
+        assert_eq!(delta.tasks.iter().map(|t| t.id).collect::<Vec<_>>(), vec![local.id]);
+        assert!(delta.watermark > ahead);
     }
 
     #[test]

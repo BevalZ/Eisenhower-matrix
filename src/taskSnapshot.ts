@@ -1,11 +1,17 @@
 import type { Task } from "./types";
 
 // Compile-time coverage: adding a Task field requires including it in reconciliation.
-const fields = Object.keys({
+export const TASK_FIELDS = Object.keys({
   id: true, title: true, description: true, quadrant: true, priority: true,
   importance_score: true, urgency_score: true, done: true, created_at: true,
   completed_at: true, due_at: true,
 } satisfies Record<keyof Task, true>) as (keyof Task)[];
+
+/** True when any field of `next` differs from `current`; keeps object identity cheap to check. */
+export function fieldsDiffer(current: Task, next: Task): boolean {
+  for (const key of TASK_FIELDS) if (current[key] !== next[key]) return true;
+  return false;
+}
 
 /** Preserve reactive task objects (and the array on a no-op refresh). */
 export function reconcileTasks(current: Task[], incoming: Task[]): Task[] {
@@ -14,7 +20,7 @@ export function reconcileTasks(current: Task[], incoming: Task[]): Task[] {
   const next = incoming.map((task, index) => {
     const existing = byId.get(task.id);
     const result = existing ?? task;
-    if (existing && fields.some((key) => existing[key] !== task[key])) Object.assign(existing, task);
+    if (existing && fieldsDiffer(existing, task)) Object.assign(existing, task);
     if (current[index] !== result) sameOrder = false;
     return result;
   });

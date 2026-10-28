@@ -37,6 +37,17 @@ async fn get_tasks(state: tauri::State<'_, AppState>) -> Result<Vec<Task>, Strin
     run_db(state, Db::get_tasks).await
 }
 
+/// Incremental read for the board: the frontend passes the cursor it got last time and only
+/// receives rows written since (or a full snapshot when the cursor no longer applies).
+#[tauri::command]
+async fn get_tasks_delta(
+    generation: Option<u64>,
+    watermark: Option<i64>,
+    state: tauri::State<'_, AppState>,
+) -> Result<TaskDelta, String> {
+    run_db(state, move |db| db.get_tasks_delta(generation, watermark)).await
+}
+
 #[tauri::command]
 async fn create_task(input: TaskInput, state: tauri::State<'_, AppState>) -> Result<Task, String> {
     run_db(state, move |db| db.create_task(&input)).await
@@ -545,6 +556,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             get_tasks,
+            get_tasks_delta,
             create_task,
             toggle_task_done,
             delete_task,

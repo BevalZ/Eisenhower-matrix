@@ -9,7 +9,8 @@ async (page) => {
     const snapshot = await page.evaluate(async () => {
       for (let i = 0; i < 100; i++) perfFixture.emit();
       await new Promise((resolve) => setTimeout(resolve, 100));
-      return { listeners: perfFixture.listeners.size, taskReads: perfFixture.calls.filter((c) => c === 'get_tasks').length };
+      return { listeners: perfFixture.listeners.size,
+        taskReads: perfFixture.calls.filter((c) => c === 'get_tasks' || c === 'get_tasks_delta').length };
     });
     await cdp.send('HeapProfiler.collectGarbage');
     const synced = await cdp.send('Runtime.getHeapUsage');

@@ -20,6 +20,12 @@ export interface DropSlot {
   index: number;
 }
 
+/** A column that renders its own list; absent while the board can still measure the DOM. */
+export interface ColumnGeometry {
+  /** Drop slot for a pointer at this viewport y, or null when the column has every card mounted. */
+  indexAtPointer: (clientY: number) => number | null;
+}
+
 interface Options {
   /** Quadrant in board order, including the dragged task. */
   list: (q: Quadrant) => Task[];
@@ -27,6 +33,8 @@ interface Options {
   commit: (moves: TaskMove[]) => Promise<void>;
   /** Called when a drag starts; the returned function is called after the drop is saved. */
   lock: () => () => void;
+  /** Columns that window their lists answer the drop slot from stored offsets instead of the DOM. */
+  geometry?: (q: Quadrant) => ColumnGeometry | null;
 }
 
 /**
@@ -219,6 +227,10 @@ export function useBoardDrag(opts: Options) {
 
   function slotIndex(q: Quadrant, task: Task): number {
     const list = dropLists.value[q];
+    // A windowed column has rows mounted out of sight: it answers from its own offsets, which
+    // is the same binary search over midpoints the DOM path below performs.
+    const windowed = opts.geometry?.(q)?.indexAtPointer(y);
+    if (windowed != null) return clampIndex(list, task.done, windowed);
     const body = bodies.get(q);
     if (!body) return clampIndex(list, task.done, list.length);
     // offsetTop ignores the FLIP transforms of cards that are still animating.

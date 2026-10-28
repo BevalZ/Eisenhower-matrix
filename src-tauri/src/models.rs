@@ -228,6 +228,22 @@ pub struct SyncResult {
     pub task_count: usize,
 }
 
+/// Incremental answer to "what changed since my last read?".
+///
+/// `watermark` is the largest `updated_at` in the table after this read; the frontend sends it
+/// back to receive only later rows. `generation` changes whenever a command rewrites the task
+/// table in bulk (import, WebDAV restore, peer merge) so that a cursor taken before it is not
+/// trusted; `full` then tells the frontend the payload is a complete snapshot.
+#[derive(Debug, Serialize)]
+pub struct TaskDelta {
+    pub generation: u64,
+    pub watermark: i64,
+    pub full: bool,
+    pub tasks: Vec<Task>,
+    /// Ids of tasks that were removed (tombstoned) since the client's watermark.
+    pub removed: Vec<i64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct QuadrantStat {
     pub total: i64,

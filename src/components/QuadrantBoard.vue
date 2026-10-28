@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, ref, watch } from "vue";
 import TaskCard from "./TaskCard.vue";
+import QuadrantColumn, { type ColumnHandle } from "./QuadrantColumn.vue";
 const TaskEditDialog = defineAsyncComponent(() => import("./TaskEditDialog.vue"));
 import type { Task, Quadrant } from "../types";
 import { QUADRANT_META } from "../types";
@@ -21,25 +22,30 @@ const layout: Record<Quadrant, { row: number; col: number }> = {
   4: { row: 1, col: 0 },
 };
 
+/** Geometry of each mounted column, used for the drop slot and for focusing a moved card. */
+const columns: Record<Quadrant, ColumnHandle | null> = { 1: null, 2: null, 3: null, 4: null };
+
+function registerColumn(q: Quadrant, handle: ColumnHandle | null) {
+  columns[q] = handle;
+  setBody(q, handle?.body ?? null);
+}
+
 const { dragging, slot, outside, settling, ghostSize, ghostEl, setZone, setBody, onPointerDown } =
   useBoardDrag({
     list: tasksByQuadrant,
     commit: reorderTasks,
     lock: holdRemoteRefresh,
+    geometry: (q) => columns[q],
   });
 
-type Row = { key: string; slot: true } | { key: string; slot: false; task: Task };
-
-/** Cards per quadrant; while dragging, the dragged card is replaced by a placeholder at the drop slot. */
+// Cards per quadrant; while dragging, the dragged card is replaced by a placeholder at the drop
+// slot. Rebuilt only when the drag starts or ends, not on every pointer frame.
 const rows = computed(() => {
-  const out = {} as Record<Quadrant, Row[]>;
-  const d = dragging.value;
+  const id = dragging.value?.id;
+  const out = {} as Record<Quadrant, Task[]>;
   for (const q of quadrants) {
-    const list: Row[] = tasksByQuadrant(q)
-      .filter((t) => t.id !== d?.id)
-      .map((task) => ({ key: `t${task.id}`, slot: false, task }));
-    if (d && slot.value?.q === q) list.splice(slot.value.index, 0, { key: "drop-slot", slot: true });
-    out[q] = list;
+    const list = tasksByQuadrant(q);
+    out[q] = id == null ? list : list.filter((t) => t.id !== id);
   }
   return out;
 });
@@ -65,11 +71,18 @@ function onBodyClick(e: MouseEvent) {
   emit("new-task");
 }
 
+/** Bring a card into view (a windowed column may not have it mounted) and focus it. */
+async function focusTask(id: number, q: Quadrant) {
+  await columns[q]?.ensureVisible(id);
+  await nextTick();
+  document.querySelector<HTMLElement>(`[data-task-id="${id}"]`)?.focus();
+}
+
 function closeEditor() {
-  const id = editing.value?.id;
+  const edited = editing.value;
   editing.value = null;
   // Return focus to the card that was edited.
-  void nextTick(() => document.querySelector<HTMLElement>(`[data-task-id="${id}"]`)?.focus());
+  if (edited) void nextTick(() => void focusTask(edited.id, edited.quadrant));
 }
 
 function applyKeyboardMoves(task: Task, moves: TaskMove[], message: string) {
@@ -77,9 +90,7 @@ function applyKeyboardMoves(task: Task, moves: TaskMove[], message: string) {
   void reorderTasks(moves);
   liveMessage.value = message;
   // The card is re-mounted (other quadrant) or re-inserted (new order); keep keyboard focus on it.
-  void nextTick(() => {
-    document.querySelector<HTMLElement>(`[data-task-id="${task.id}"]`)?.focus();
-  });
+  void nextTick(() => void focusTask(task.id, task.quadrant));
 }
 
 function moveToQuadrant(task: Task, q: Quadrant) {
@@ -133,43 +144,21 @@ function nudge(task: Task, delta: -1 | 1) {
             <kbd class="q-key" :title="`选中卡片后按 ${q} 移到这里`">{{ q }}</kbd>
             <span class="q-count">{{ tasksByQuadrant(q).length }}</span>
           </div>
-          <div
-            :ref="(el) => setBody(q, el)"
-            class="q-body"
-            :title="`点击空白处新建任务（${QUADRANT_META[q].name}）`"
-            @click="onBodyClick"
-          >
-            <TransitionGroup tag="div" name="card" :css="false" class="q-list" role="list">
-              <template v-for="row in rows[q]" :key="row.key">
-                <div
-                  v-if="row.slot"
-                  class="drop-slot"
-                  :style="{ height: ghostSize.height + 'px' }"
-                  aria-hidden="true"
-                ></div>
-                <TaskCard
-                  v-else
-                  :task="row.task"
-                  @toggle="toggleTaskDone"
-                  @remove="deleteTask"
-                  @pointer-down="onPointerDown"
-                  @move-to="moveToQuadrant"
-                  @nudge="nudge"
-                  :now="row.task.due_at == null ? undefined : now"
-                  @edit="editing = $event"
-                />
-
-              </template>
-            </TransitionGroup>
-            <div v-if="!rows[q].length" class="empty">
-              <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.2">
-                <rect x="4" y="4" width="20" height="20" rx="3" stroke-dasharray="3 3"/>
-                <path d="M14 10v8M10 14h8" stroke-linecap="round"/>
-              </svg>
-              <span>点这里新建任务</span>
-              <span class="empty-sub">也可以把卡片拖进来（键盘：选中卡片按 {{ q }}）</span>
-            </div>
-          </div>
+          <QuadrantColumn
+            :quadrant="q"
+            :rows="rows[q]"
+            :slot-index="dragging && slot?.q === q ? slot.index : null"
+            :ghost-height="ghostSize.height"
+            :now="now"
+            @ready="registerColumn(q, $event)"
+            @toggle="toggleTaskDone"
+            @remove="deleteTask"
+            @pointer-down="onPointerDown"
+            @move-to="moveToQuadrant"
+            @nudge="nudge"
+            @edit="editing = $event"
+            @body-click="onBodyClick"
+          />
         </section>
       </div>
       <span class="axis-label axis-x">← 不紧急 &nbsp;&nbsp;|&nbsp;&nbsp; 紧急 →</span>
@@ -290,45 +279,6 @@ function nudge(task: Task, delta: -1 | 1) {
   border-radius: 10px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
-}
-/* Positioned so card offsetTop is measured from here (see useBoardDrag.slotIndex). */
-.q-body {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 10px;
-}
-.empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-muted);
-  font-size: 12px;
-  padding: 34px 0;
-  opacity: 0.7;
-  border-radius: var(--radius);
-  transition: background var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
-}
-/* 整块空白区域都是「新建任务」的入口，所以给一点可点的暗示 */
-.empty:hover {
-  background: var(--q-light);
-  opacity: 1;
-  color: var(--q-color);
-}
-.empty-sub { font-size: 11px; opacity: 0.75; }
-
-/* Siblings glide out of the way (FLIP via TransitionGroup move class). */
-.q-list > .card-move {
-  transition: transform 0.2s var(--ease);
-}
-.drop-slot {
-  box-sizing: border-box;
-  margin-bottom: 8px;
-  border: 1.5px dashed var(--q-color);
-  border-radius: var(--radius);
-  background: var(--q-light);
 }
 
 .drag-ghost {

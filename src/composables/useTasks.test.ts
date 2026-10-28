@@ -10,6 +10,10 @@ function task(id: number): Task {
     importance_score: 3, urgency_score: 3, done: false, created_at: 1,
     completed_at: null, due_at: null };
 }
+/** A full answer from `get_tasks_delta`, which is what a first read returns. */
+function snapshot(tasks: Task[]) {
+  return { generation: 1, watermark: 1, full: true, tasks, removed: [] };
+}
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 beforeEach(() => { vi.resetModules(); vi.mocked(invoke).mockReset(); });
 
@@ -43,7 +47,7 @@ describe("task store", () => {
 
   it("does not reload under a drag, and coalesces requests when the hold ends", async () => {
     const store = (await import("./useTasks")).useTasks();
-    vi.mocked(invoke).mockResolvedValue([task(1)]);
+    vi.mocked(invoke).mockResolvedValue(snapshot([task(1)]));
     const release = store.holdRemoteRefresh();
     const requests = Array.from({ length: 100 }, () => store.loadTasks({ quiet: true }));
     await flush();
@@ -52,5 +56,28 @@ describe("task store", () => {
     await Promise.all(requests);
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(store.tasks.value).toHaveLength(1);
+  });
+
+  it("asks for increments once it has a cursor, and takes a full snapshot again after a bulk command", async () => {
+    const store = (await import("./useTasks")).useTasks();
+    const answers: Record<string, unknown> = {
+      get_tasks_delta: snapshot([task(1)]),
+      import_data: 1,
+    };
+    vi.mocked(invoke).mockImplementation((async (command: string) =>
+      command in answers ? answers[command] : undefined) as never);
+
+    await store.loadTasks();
+    expect(invoke).toHaveBeenCalledWith("get_tasks_delta", { generation: null, watermark: null });
+
+    answers.get_tasks_delta = { generation: 1, watermark: 5, full: false, tasks: [], removed: [1] };
+    await store.loadTasks();
+    expect(invoke).toHaveBeenLastCalledWith("get_tasks_delta", { generation: 1, watermark: 1 });
+    expect(store.tasks.value).toHaveLength(0);
+
+    // Import rewrites the table, so the cursor is dropped and the next read is a full one.
+    await store.importData("{}");
+    expect(invoke).toHaveBeenCalledWith("import_data", { json: "{}" });
+    expect(invoke).toHaveBeenLastCalledWith("get_tasks_delta", { generation: null, watermark: null });
   });
 });

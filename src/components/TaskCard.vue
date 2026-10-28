@@ -4,7 +4,7 @@ import type { Quadrant, Task } from "../types";
 import { QUADRANT_META } from "../types";
 import { dueLabel, dueState, urgentTarget } from "../due";
 
-const props = defineProps<{ task: Task; ghost?: boolean; now?: number }>();
+const props = defineProps<{ task: Task; ghost?: boolean; now?: number; enter?: boolean }>();
 const emit = defineEmits<{
   toggle: [id: number];
   remove: [id: number];
@@ -30,8 +30,9 @@ const due = computed(() => {
 });
 
 // Entrance animation only on mount: re-inserting a node during reorder would replay a
-// class-based animation and make every sibling flicker.
-const entering = ref(true);
+// class-based animation and make every sibling flicker. A card mounted by a scrolled
+// virtual list is not arriving anywhere, so it skips the animation too.
+const entering = ref(props.enter !== false);
 function onAnimationEnd(e: AnimationEvent) {
   if (e.target === e.currentTarget) entering.value = false;
 }

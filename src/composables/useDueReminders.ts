@@ -78,8 +78,21 @@ export function useDueReminders(tasks: Ref<Task[]>, move: (task: Task, q: Quadra
     clearInterval(timer);
     document.removeEventListener("visibilitychange", updateTimer);
   });
-  // New or edited deadlines are checked right away, not on the next tick.
-  watch(() => [ready.value, tasks.value.map((t) => `${t.id}:${t.due_at}:${t.done}`).join()], check);
+  // New or edited deadlines are checked right away, not on the next tick. Only tasks with a
+  // deadline take part in the signature: on a board with thousands of undated tasks, rebuilding
+  // a string per task on every change costs more than the check itself.
+  watch(
+    () => {
+      if (!ready.value) return "pending";
+      let signature = "";
+      for (const task of tasks.value) {
+        if (task.due_at == null) continue;
+        signature += `${task.id}:${task.due_at}:${task.done ? 1 : 0};`;
+      }
+      return signature;
+    },
+    check,
+  );
 
   return { now };
 }
