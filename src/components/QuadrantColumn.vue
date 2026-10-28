@@ -55,18 +55,20 @@ let averages: HeightAverages = {
 };
 
 const offsets = computed(() => {
-  version.value;
+  // `version` is the invalidation signal: measured heights live in a plain Map.
+  void version.value;
   return rowOffsets(rowHeights(props.rows, heights, averages));
 });
 
-const window = computed(() => (windowed.value
+// Windowed columns render a slice of the list around the viewport; the rest is two spacers.
+const viewWindow = computed(() => (windowed.value
   ? rowWindow(offsets.value, scrollTop.value, viewport.value)
   : { start: 0, end: props.rows.length, topPad: 0, bottomPad: 0 }));
 
-const windowStart = computed(() => window.value.start);
-const windowEnd = computed(() => window.value.end);
-const topPad = computed(() => window.value.topPad);
-const bottomPad = computed(() => window.value.bottomPad);
+const windowStart = computed(() => viewWindow.value.start);
+const windowEnd = computed(() => viewWindow.value.end);
+const topPad = computed(() => viewWindow.value.topPad);
+const bottomPad = computed(() => viewWindow.value.bottomPad);
 /** Rows arriving because the list scrolled must not replay the entrance animation. */
 const enter = computed(() => !windowed.value || !scrolled.value);
 
