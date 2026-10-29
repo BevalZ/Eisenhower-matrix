@@ -13,6 +13,7 @@ git 已保存的凭据，通过 HTTP 代理访问公开 API，因此可以直接
   python scripts/ci.py artifacts <run_id>            该次运行的产物（名字/大小/是否过期）
   python scripts/ci.py fetch  <artifact_id> <输出路径>  下载产物 zip（APK 等）
   python scripts/ci.py log    <job_id> [正则]         打印 job 日志；给了正则会过滤匹配行
+  python scripts/ci.py notes  <tag> <markdown 文件>    改写 Release 说明（本机没有 gh CLI）
 
 环境变量：
   HTTPS_PROXY / HTTP_PROXY   代理地址，默认 http://127.0.0.1:7890
@@ -78,11 +79,13 @@ class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
         return new
 
 
-def _request(path, raw):
-    req = urllib.request.Request(
-        API + path,
-        headers={"Authorization": "Bearer " + token(), "User-Agent": "dsh",
-                 "Accept": "application/vnd.github+json"})
+def _request(path, raw, payload=None, method=None):
+    body = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"Authorization": "Bearer " + token(), "User-Agent": "dsh",
+               "Accept": "application/vnd.github+json"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(API + path, data=body, headers=headers, method=method)
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}), _NoAuthRedirect())
     # 代理偶尔会掐断连接或截断响应（IncompleteRead / 半截 JSON），重试比让整轮观察中断划算。
@@ -105,6 +108,20 @@ def get(path):
 
 def get_bytes(path):
     return _request(path, raw=True)
+
+
+def send(method, path, payload):
+    return _request(path, raw=False, payload=payload, method=method)
+
+
+def set_release_notes(tag, notes_file):
+    """改写某个 Release 的说明（本机没有 gh，用仓库里保存的凭据走 API）。"""
+    with open(notes_file, encoding="utf-8") as handle:
+        body = handle.read()
+    release = send("PATCH", f"/releases/tags/{tag}", {"body": body})
+    print(f"{release['html_url']}  正文 {len(release['body'])} 字")
+    for asset in release["assets"]:
+        print(f"  {asset['name']}  {asset['size'] / 1024 / 1024:.1f}MB")
 
 
 def newest_run(branch, workflow):
@@ -202,6 +219,8 @@ def main():
         print(f"已保存 {len(data)} 字节到 {sys.argv[3]}")
     elif cmd == "log":
         print_failure(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
+    elif cmd == "notes":
+        set_release_notes(sys.argv[2], sys.argv[3])
     else:
         raise SystemExit(__doc__)
 
